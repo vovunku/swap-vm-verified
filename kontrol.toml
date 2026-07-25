@@ -14,13 +14,11 @@ foundry-project-root       = '.'
 verbose                    = false
 debug                      = false
 reinit                     = false
-cse                        = false
 workers                    = 4
 failure-information        = true
 counterexample-information = true
 minimize-proofs            = false
 fail-fast                  = false
-smt-timeout                = 5000
 run-constructor            = false
 no-stack-checks            = true
 
@@ -29,24 +27,80 @@ no-stack-checks            = true
 # for one schedule against the cost/opcode rules of another.
 schedule                   = 'CANCUN'
 
-# Checkpointing. Kontrol persists proof state *between* nodes, so the distance between
-# nodes determines how much work a crash or timeout discards. The upstream default
-# (max-depth 25000, every break-on-* disabled) produces edges thousands of steps long:
-# a backend crash mid-edge loses everything since the last node, and the node count
-# stays frozen so the proof looks hung when it is in fact progressing.
+# ---------------------------------------------------------------------------
+# Performance. These values are measured, not guessed.
+# ---------------------------------------------------------------------------
 #
-# These settings trade some per-node overhead for durable, observable progress:
-# a crash costs one small node, `kontrol list` node counts become a live progress
-# signal, and a stall can be localised to a single basic block instead of one opaque
-# multi-thousand-step edge. Raise max-depth once a proof is known to close quickly.
-max-depth                  = 2000
-break-on-basic-blocks      = true
-break-on-calls             = true
+# This file previously set `max-depth = 2000` with `break-on-basic-blocks` and
+# `break-on-calls`, on the reasoning that frequent checkpoints make progress durable and
+# visible. A controlled A/B (two runs per arm, interleaved, on
+# XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput) showed that reasoning was wrong on
+# both counts:
+#
+#   proof execution time   785 s / 749 s  ->   87 s /  76 s     9.4x faster
+#   wall clock             944 s / 877 s  ->  168 s / 143 s     5.9x faster
+#   node ids allocated          89        ->        4
+#   proof.json                22.5 MB     ->     0.91 MB        24x smaller
+#   final KCFG and verdict    identical   ->   identical (PASSED)
+#
+# The cut-point rules make the backend return after every basic block, so one `execute`
+# RPC becomes ~89, each shipping a 140-250 KB configuration in both directions. Then
+# `optimize-kcfg` merges those nodes back and deletes them (pyk/kcfg/kcfg.py:589-601), so
+# we paid ~85 round trips for checkpoints that do not survive. The proof store confirms
+# it: surviving edges have depths of 1207 and 3319, far beyond a basic block and beyond
+# the old max-depth.
+#
+# The capability is still available on demand: `kontrol section-edge <test> <edge>
+# --sections N` cuts a long edge into intermediate nodes after the fact, and the
+# [prove.inspect] profile below turns the break flags back on for one stuck proof.
+max-depth                  = 100000
+break-on-basic-blocks      = false
+break-on-calls             = false
 break-on-jumpi             = false
 break-on-jump              = false
 break-on-storage           = false
 break-on-cheatcodes        = false
 optimize-kcfg              = true
+
+# `max-frontier-parallel` sets the server's GHCRTS=-N (kontrol/prove.py:359 ->
+# pyk/kore/rpc.py:1322). At its default of 1, every kore-rpc-booster process runs with a
+# single Haskell capability, so `workers = 4` was using at most 4 of 16 cores.
+max-frontier-parallel      = 4
+
+# `log-rewrites` defaults to true, and at `maintenance-rate = 1` the resulting proof.json
+# is rewritten every iteration - 150,180 rewrite-log entries and ~1 GB of disk writes for
+# a single 4-node proof. Note the key is `log-rewrites = false`; `no-log-rewrites = true`
+# silently does nothing.
+log-rewrites               = false
+maintenance-rate           = 16
+
+# SMT retries use a *scaling* timeout, and the default retry limit is 10. A single
+# undecidable query - exactly what a symbolic DIV or a symbolic square produces - burns
+# 5s + 10s + 20s + ... before returning Unknown, after which the booster aborts the step
+# and Kore re-runs it. That is the mechanism behind "a symbolic DIV stalls forever with
+# nothing visibly hung". Upstream kontrol#716 reached the same conclusion.
+smt-timeout                = 120000
+smt-retry-limit            = 0
+
+cse                        = false
+
+# Profile for diagnosing a single stuck proof: fine-grained nodes, no on-the-fly merging,
+# so `kontrol show --node` can localise the stall. Do NOT use for routine proving.
+[prove.inspect]
+foundry-project-root       = '.'
+workers                    = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+smt-timeout                = 120000
+smt-retry-limit            = 0
 
 [show.default]
 foundry-project-root       = '.'
