@@ -16,10 +16,14 @@ document. Two agents never hold the same file. This is what makes the work paral
 definition and only the coordinator runs it. Any number of agents may run `kontrol prove`
 concurrently against a stable definition, capped at `--workers 3` each.
 
-**A spec edit is not provable by its author.** The definition contains the *compiled*
-bytecode of the spec contracts, so an edited spec is invisible to the prover until the
-coordinator rebuilds. Agents editing a spec validate with `forge test` and hand off; agents
-proving existing properties work against what is already compiled.
+**A spec edit needs only `forge build`.** Contract bytecode is *not* in the K definition —
+`prove.py` reads it from the Foundry artifacts at prove time. So an agent that edits its own
+spec can rebuild and prove it itself, in seconds, without disturbing anyone:
+
+    FOUNDRY_PROFILE=kontrol forge build --build-info --extra-output storageLayout \
+      evm.bytecode.generatedSources evm.deployedBytecode.generatedSources
+
+`kontrol build` is only needed when `lemmas.k` changes, and remains coordinator-only.
 
 **Every agent ends with a HANDOFF section.** That is the unit of work the coordinator acts
 on. An agent that made no progress still writes one, saying what blocked it — a blocked

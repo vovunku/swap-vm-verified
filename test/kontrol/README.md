@@ -121,12 +121,28 @@ Either run as that user, or copy the working tree to a path it owns.
 
 ## Build
 
-> **Always build before proving.** `kontrol build` compiles the test contracts' *bytecode*
-> into the K definition, so the prover only ever sees contracts that existed at the last
-> build. Write a new spec file and run `kontrol prove` straight away and it reports that the
-> test does not exist — the definition genuinely has no such contract yet. Edit an existing
-> spec without rebuilding and you silently prove the **old** version. The loop is always
-> **edit → `kontrol build` → `kontrol prove`**.
+> **A spec edit needs only `forge build`, not `kontrol build`.** This was documented the
+> other way round here for most of the project and it was wrong — verified empirically:
+> widening a property from `uint120` to `uint256` and running only `forge build` changed the
+> signature Kontrol selected, with no `kontrol build` at all.
+>
+> In Kontrol 1.0.255 contract bytecode is **not** baked into the K definition. `prove.py:771`
+> reads `contract.deployed_bytecode` from the Foundry artifacts at prove time, and
+> `grep -c YourSpec out/kompiled/compiled.txt` returns 0. So after editing a spec or harness:
+>
+> ```bash
+> FOUNDRY_PROFILE=kontrol forge build --build-info --extra-output storageLayout \
+>   evm.bytecode.generatedSources evm.deployedBytecode.generatedSources
+> ```
+>
+> That is seconds rather than minutes, and it does **not** disturb other agents — which means
+> spec edits no longer need to be batched or coordinated through the build. `--reinit` is
+> also unnecessary: the method digest goes stale on its own and Kontrol allocates a fresh
+> version ("Creating a new version of test X because it is out of date").
+>
+> `kontrol build` is still required when **`lemmas.k`** changes, since those rules genuinely
+> are compiled into the definition. That build remains coordinator-only and still supersedes
+> in-flight proofs.
 
 Run this once after cloning, and again after every change to a spec, a harness, a contract,
 `lemmas.k`, or the compiler settings. All commands assume the repository root as the working
