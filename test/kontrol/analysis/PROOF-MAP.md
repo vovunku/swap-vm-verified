@@ -47,46 +47,48 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 
 ## Summary — 54 of 133 Track B properties proven
 
-*Counting highest version only. Track B = XYCSwap, PeggedSwap, XYCConcentrate,
-PiecewiseLinearScale, Power.*
+*Regenerated from the proof store, highest version only. Property totals counted from the
+spec sources, not from memory.*
 
-| Spec | Properties | Proven | Attempted | Hit rate |
-|---|---|---|---|---|
-| PiecewiseLinearScale | 31 | **24** | 27 | 89% |
-| Power | 31 | **11** | 11 | **100%** |
-| XYCSwap | 12 | **8** | 10 | 80% |
-| XYCConcentrate | 21 | **6** | 8 | 75% |
-| PeggedSwap | 38 | **5** | 11 | 45% |
-| **Track B total** | **133** | **54** | **67** | **81%** |
+| Spec | Properties | Proven | Attempted |
+|---|---|---|---|
+| PiecewiseLinearScale | 31 | **24** | 27 |
+| Power | 31 | **11** | 13 |
+| XYCSwap | 13 | **8** | 10 |
+| XYCConcentrate | 21 | **6** | 9 |
+| PeggedSwap | 37 | **5** | 11 |
+| **Track B total** | **133** | **54** | **70** |
 
-Track A, out of scope: `LimitSwap` (4 attempted, 0 proven), `MinRate`, `BaseFeeAdjuster`.
+**77% of attempted properties close.** 63 of 133 are simply unattempted, so the constraint is
+throughput rather than provability. More machine time and more agents buy proofs; more lemma
+engineering mostly does not.
 
-**81% of attempted properties close.** The bottleneck is throughput, not provability —
-79 of 133 are simply unattempted. Every "stuck" diagnosis in this project's history turned
-out to be environmental rather than mathematical: 57 orphaned backend servers, a config
-measured 9.4x slower than default, then 175% oversubscription from `max-frontier-parallel`
-multiplying across concurrent agents. **Suspect the environment before the mathematics.**
+Track A, out of scope: `LimitSwap`, `MinRate`, `BaseFeeAdjuster`.
 
 ### Landmarks
 
-- **`Power` is 11 of 11** — every attempted property closed, including the concrete-exponent
-  unrollings and the `uint8`-exponent BMC goals.
-- **`PiecewiseLinearScale` is 24 of 27**, the strongest spec in the project.
-- **`test_value_unscaleThenScaleIsIdentity`** closed on the Section 5 `ceilDiv -> up/Int`
-  normalisation — the property that lemma was written for.
+- **`PiecewiseLinearScale` 24 of 31**, the strongest spec in the project.
+- **`test_value_unscaleThenScaleIsIdentity`** was FAILING and now passes, flipped by the
+  Section 8 `asword-buf29-zeros` rule. The failure was a spurious `EVMC_REVERT` branch caused
+  by a left shift never becoming a multiplication.
 - **`test_knownUnderflow_exactOutAtLargeReserves`** is proven under Kontrol, not merely
-  reproduced under `forge test`. Strongest evidence tier available for the bug report.
-- **`test_bothBalancesZeroGuardFiresWhenBothZero`** closed at 128 nodes — the full 2^7
-  `Math.sqrt` MSB cascade, without any abstraction. The `isqrt` seam may matter less than
-  assumed.
+  reproduced under `forge test` — the strongest evidence tier available for the bug report.
+- **`test_bothBalancesZeroGuardFiresWhenBothZero`** closed at 128 nodes, the full 2^7
+  `Math.sqrt` MSB cascade, with no abstraction.
+- Both XYCSwap reachability witnesses closed first try, ~100 s each.
 
-### Still open (17 at latest version)
+### The remaining stalls are understood, and none is an SMT wall
 
-The three `test_seam_deadCode_*` (16-31 nodes, 1-2 pending each) are the `isqrt` seam's first
-real test. `XYCSwapSpec.test_exactIn_cannotDrainPool` and `roundsInFavourOfMaker` remain the
-long-standing pair. `XYCConcentrateSpec.test_exactIn_partialFillNeverChargesMoreThanOffered`
-needs `ceilDiv` minimality. `PiecewiseLinearScaleSpec.test_scale_rangeAnyLengthArgs` is the
-`--bmc-depth 51` goal.
+All six outstanding XYCSwap goals were put to Z3 directly with full `uint256` bounds:
+**every one decided in under 60 ms.** The z3 sessions attached to those proofs sat at 0.0%
+CPU for 43 minutes while the backends held 98% each. They are rewriting-bound. The cost comes
+from `try`/`catch` deliberately removing the assumptions, so the instruction's own guards
+split into three live arms each needing a ~3000-step edge — correct and intended, roughly 50x
+the work of the assumption form.
+
+`PiecewiseLinearScale`'s remaining four are blocked on one thing: `/Word` with a symbolic
+divisor never reduces to `/Int`, so no KEVM overflow lemma can match. Section 4's
+`div-word-to-int` and `mul-guard-word` target it and await a rebuild.
 
 ## Per-spec notes
 
