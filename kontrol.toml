@@ -161,6 +161,42 @@ maintenance-rate           = 16
 smt-timeout                = 120000
 smt-retry-limit            = 0
 
+# Compositional symbolic execution. Kept as a SEPARATE profile rather than folded into the
+# default, so the first runs against it are a clean A/B rather than a confounded one.
+#
+# Why it matters here: every spec deploys a harness and calls it EXTERNALLY, so each property
+# pays ~1930 steps of ABI-encode, STATICCALL frame setup, ABI-decode and return buffer before
+# reaching any instruction arithmetic -- measured on XYCSwapSpec.test_exactIn_cannotDrainPool,
+# whose first guard branch is not reached until node 45 of 62, and whose open leaves contain
+# no arithmetic term at all. We pay that once per property, thirteen times over in XYCSwap
+# alone. CSE executes a called function once in an abstract symbolic setting and installs the
+# result as a summary rule applied at higher priority at every later call site.
+#
+# Upstream documents this as the primary optimisation for external calls; it was `false` here
+# for the whole project. It composes with `@custom:kontrol-precondition` NatSpec annotations,
+# which apply constraints DURING summary generation and so eliminate overflow branches before
+# the summary is built -- which is exactly what blocks the exactness properties.
+#
+# `--cse` and `--include-summary` are mutually exclusive (kontrol/prove.py:75).
+[prove.cse]
+foundry-project-root       = '.'
+workers                    = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+log-rewrites               = false
+maintenance-rate           = 16
+smt-timeout                = 120000
+smt-retry-limit            = 0
+cse                        = true
+
 # Profile for diagnosing a single stuck proof: same cut points as the default now uses, but
 # `workers = 2` and nothing else competing, so `kontrol show --node` can localise the stall.
 # Since the default adopted checkpointing this is close to it -- kept as a stable name for
