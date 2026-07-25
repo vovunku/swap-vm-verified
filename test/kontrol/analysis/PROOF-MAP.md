@@ -45,119 +45,50 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 
 ---
 
-## Summary — 54 of 133 Track B properties proven
+## Summary — 56 of 133 Track B properties proven
 
-*Regenerated from the proof store, highest version only. Property totals counted from the
-spec sources, not from memory.*
+*Regenerated from the proof store, highest version only.*
 
 | Spec | Properties | Proven | Attempted |
 |---|---|---|---|
 | PiecewiseLinearScale | 31 | **24** | 27 |
-| Power | 31 | **11** | 13 |
+| Power | 31 | **12** | 15 |
 | XYCSwap | 13 | **8** | 10 |
 | XYCConcentrate | 21 | **6** | 9 |
-| PeggedSwap | 37 | **5** | 11 |
-| **Track B total** | **133** | **54** | **70** |
+| PeggedSwap | 37 | **6** | 12 |
+| **Track B total** | **133** | **56** | **73** |
 
-**77% of attempted properties close.** 63 of 133 are simply unattempted, so the constraint is
-throughput rather than provability. More machine time and more agents buy proofs; more lemma
-engineering mostly does not.
-
-Track A, out of scope: `LimitSwap`, `MinRate`, `BaseFeeAdjuster`.
+**77% of attempted properties close.** 60 of 133 remain unattempted, so throughput is the
+constraint, not provability.
 
 ### Landmarks
 
-- **`PiecewiseLinearScale` 24 of 31**, the strongest spec in the project.
-- **`test_value_unscaleThenScaleIsIdentity`** was FAILING and now passes, flipped by the
-  Section 8 `asword-buf29-zeros` rule. The failure was a spurious `EVMC_REVERT` branch caused
-  by a left shift never becoming a multiplication.
-- **`test_knownUnderflow_exactOutAtLargeReserves`** is proven under Kontrol, not merely
-  reproduced under `forge test` — the strongest evidence tier available for the bug report.
-- **`test_bothBalancesZeroGuardFiresWhenBothZero`** closed at 128 nodes, the full 2^7
-  `Math.sqrt` MSB cascade, with no abstraction.
-- Both XYCSwap reachability witnesses closed first try, ~100 s each.
+- **`PiecewiseLinearScale` 24 of 31** — the strongest spec.
+- **`Power` 12 of 31 from zero**, covering the whole concrete-input surface: both
+  trailing-square bug witnesses, all three decay-reaches-zero witnesses for the DutchAuction
+  bug, and the `2**128` totality boundary. Those findings are now machine-checked rather than
+  asserted.
+- **`test_knownUnderflow_exactOutAtLargeReserves`** proven under Kontrol — the strongest
+  evidence tier available for the PeggedSwap bug report.
+- **`test_value_unscaleThenScaleIsIdentity`** went from FAILING to PASSED on a lemma written
+  against a dumped term.
 
-### The remaining stalls are understood, and none is an SMT wall
+### What the stalls have actually been
 
-All six outstanding XYCSwap goals were put to Z3 directly with full `uint256` bounds:
-**every one decided in under 60 ms.** The z3 sessions attached to those proofs sat at 0.0%
-CPU for 43 minutes while the backends held 98% each. They are rewriting-bound. The cost comes
-from `try`/`catch` deliberately removing the assumptions, so the instruction's own guards
-split into three live arms each needing a ~3000-step edge — correct and intended, roughly 50x
-the work of the assumption form.
+Every one investigated so far has been environmental or structural, never a missing lemma:
 
-`PiecewiseLinearScale`'s remaining four are blocked on one thing: `/Word` with a symbolic
-divisor never reduces to `/Int`, so no KEVM overflow lemma can match. Section 4's
-`div-word-to-int` and `mul-guard-word` target it and await a rebuild.
-
-## Per-spec notes
-
-### XYCSwap — 5 / 12
-Strengthened from 8 to 12 properties after an audit showed the original four exact-in
-properties were **jointly satisfied by an implementation returning `0` unconditionally** —
-verified empirically against a throwaway mutant, not merely argued. The four additions
-(two-sided exactness on each leg, two concrete witnesses) are written and fuzz-green but
-await a rebuild before they can be proven.
-
-**Open regression.** `constantProductNeverDecreases` closed at `:0` in under ten minutes but
-`:1` will not close in thirty, sitting at the same node count with one pending node. That is
-the shape of a lemma or bytecode regression from a rebuild, not of a slow proof. **Bisect
-before trusting the current definition.**
-
-Remaining gap: exact-out exactness is `uint120`-narrowed, so an implementation correct below
-`2^120` and overcharging above it still satisfies the spec. Closing it needs the minimality
-half stated unnarrowed — safe, since `(amountIn - 1) * d < N` is bounded by `N`, a product the
-instruction does form, and `lemmas.k` already has `updiv-minimal` in that shape.
-
-### PeggedSwap — 1 / 31
-**19 properties need `--reinit`** because their cached state predates the immutable→accessor
-fix; **7 of those previously reported a vacuous PASS**, including all three dead-code claims.
-Grouped by sqrt cost: Group A needs no symbolic sqrt (cheapest); B one; C two, halting at the
-recompute guard; D up to four but discharged from the path condition alone (~2^28 paths);
-**E needs sqrt-value reasoning and cannot prove without the seam**; F is ~2^56 paths.
-
-### XYCConcentrate — 1 / 21
-LEG-LEVEL keeps `_computeL` off the path by taking virtual reserves as scalars — verified both
-structurally and by gas measurement (legs' max 1,327 below `full`'s min 1,862).
-
-FULL-INSTRUCTION is blocked on **two** things: the `mul512` collapse (dead until the
-`preserves-definedness` fix, so every attempt so far ran without it) **and** an `isqrt` seam,
-since `_computeL` calls `Math.sqrt(disc)` with `disc` fully symbolic. `test_full_cannotDrainPool`
-additionally cannot close via `mul512` even in principle — its price bounds are free
-`uint256`s, so the 512-bit path is genuinely reachable. That one is a specification-domain
-problem.
-
-**Completion criterion: the two `test_diff_*` properties.** Until they close, every LEG-LEVEL
-result is a theorem about a hand transcription rather than about `XYCConcentrate`.
-
-### PiecewiseLinearScale — 4 / 31
-`--bmc-depth 51` yields a **complete** result rather than a bounded one: `runLoop` reads
-`argsLength` as a single byte, so the segment count is at most 50 and iteration 51 is
-infeasible. Verify no reachable `bounded` leaves remain afterwards.
-
-**X** `test_argsLength_underThirteenBytesNeverTerminates` — excluded from `kontrol prove`. It
-witnesses a non-terminating loop via a gas cap, and gas is off under Kontrol.
-
-### Power — 0 / 31
-Spec written, never built. Single-execution-path properties (concrete exponents) should prove
-first; `uint8`-exponent properties need `--bmc-depth 9`; full-`uint256`-exponent properties
-need a loop invariant rather than a larger depth.
-
-## Blockers, ranked by properties unblocked
-
-1. **`isqrt` seam** — gates PeggedSwap Groups E/F and all of XYCConcentrate FULL-INSTRUCTION. Now known
-   to need a **harness seam, not a lemma**: `Math.sqrt` is inlined, `--cse` provably cannot
-   see it (`find_function_calls` drops library member accesses), and `--lemmas` cannot declare
-   a new symbol. The route is `kevm.freshUInt` plus paired `vm.assume` bounds at the call
-   site, landing on the Section 7 symbolic-square rules already compiled in. **In progress.**
-2. **Re-proving after the `preserves-definedness` fix** — the `mul512` rules were dead until
-   this build, so every XYCConcentrate FULL-INSTRUCTION attempt so far was made without them.
-3. **The 19 PeggedSwap properties needing `--reinit`** after the immutable→accessor fix, 7 of
-   which previously reported a vacuous PASS.
-4. **`_selectorOf` returning 0 on short revert data** — reintroduces the same vacuity for
-   every negative selector assertion on any path reverting with an empty payload.
-5. **Loop invariants for `Power.pow`** — the only technique that beats `2^bitlength` leaves.
-   MakerDAO's `kontrol-dss-2024/src/invariant.md` is the one public worked example.
+1. **The default prove profile does not generalise.** Its 9.4x A/B was measured on one
+   long-straight-edged property. On a branchy instruction body the result *inverts*: a
+   PeggedSwap node that would not expand at all under the default expanded in three minutes
+   under `--config-profile inspect`. **Try that first when a proof stalls.**
+2. **Symbolic-length `bytes calldata`.** `lengthBytes(args)` propagates into every memory
+   offset. Properties built on a fixed-layout `_args(...)` with symbolic fields close;
+   the same properties with a symbolic-length `bytes` do not.
+3. **Rewriting-bound, not SMT-bound.** Repeatedly measured: boosters at 100% CPU while their
+   `z3` children sit at 0.0%. All six outstanding XYCSwap goals were put to Z3 directly and
+   decided in under 60 ms.
+4. **Oversubscription.** 63 requested workers on 16 cores at one point; a `DebugApplyEquation`
+   logging run held 47-52 GB and drove the box to load 34 with swap exhausted.
 
 ## Preserving proofs
 
@@ -197,8 +128,41 @@ container rebuilds — **not** spec edits. Nothing resurrects a result whose con
 
 ## Operational notes
 
-- **Drain agents before rebuilding.** A rebuild mints new proof versions and supersedes
-  in-flight work. This has already cost one round of agent progress.
+- **CORRECTION — a rebuild does *not* mint new proof versions.** The claim above (and the
+  "Version staleness" note at the top of this file) is wrong about the definition.
+  `Contract.Method.digest` (`kontrol/solc_to_k.py:643-646`) hashes
+  `signature + ast + contract_storage_digest + contract_digest`, all read from the **Foundry
+  artifact JSON**; the kompiled K definition is not an input, and `resolve_proof_version`
+  (`kontrol/foundry.py:943-980`) reuses the latest version whenever that digest matches.
+  Verified across the `2026-07-25 01:39` rebuild: all six PASSED `XYCConcentrate` proofs
+  stayed at `:0` and `setUp` stayed PASSED at `:3`. What a rebuild costs is the **in-flight
+  runs**, not the store — so "drain agents before rebuilding" is still the right operational
+  rule, for a different reason. **A spec edit is the expensive operation**, and it costs the
+  whole file: `contract_digest` covers the entire contract JSON, so adding one property to a
+  21-property spec invalidates all 21.
+- **Kill leftover chain scripts before dispatching a new agent onto a file.** A previous
+  `XYCConcentrate` subsession left `/home/user/xycrun/chain.sh` (a six-batch chain covering
+  nearly the whole target list) and `/home/user/xycrun/b1.sh` (queued behind it) alive in the
+  container. The incoming agent's runs and those became **two `kontrol prove` processes
+  driving the same `out/proofs/<id>` directories** — the same hazard as two agents on one
+  spec, except invisible, because the offender is a detached script with no agent attached to
+  it. Check `ps -eo pid,ppid,etime,args | grep 'kontrol prove'` *before* launching anything,
+  and reap by killing the **script tree by explicit PID** — never `pkill -f kore-rpc-booster`.
+- **An empty `out/proofs/<id>/` is NOT evidence of a stuck or contended proof.** This
+  misdiagnosis cost a restart. `[prove.default]` in `kontrol.toml` sets
+  **`maintenance-rate = 16`** and **`max-depth = 100000`**, so pyk writes proof data only
+  every 16 iterations (`pyk/proof/proof.py:384`) plus once at the end — and with a
+  100k-step depth limit a leg-level proof needs only ~3-4 iterations in total. A proof
+  therefore normally persists **nothing at all until it finishes**, and a run stopped by a
+  wall-clock budget before either threshold loses everything. Do not infer progress from
+  `find out/proofs/<id> -type f`; a directory containing only `kcfg/nodes/` is the expected
+  mid-run state. Two consequences for runners: give budgets generous headroom rather than
+  tight ones, and prefer letting a batch finish over killing it, because a kill before
+  iteration 16 discards the whole run.
+- **`nohup`/`docker exec -d` runners outlive the agent session that started them.** That is
+  what makes the trap above recurrent: an agent whose session ends leaves its chain running
+  for hours. Any runner should write a `.done` marker and, ideally, self-terminate on a
+  wall-clock budget (`/home/user/xyc2/runw.sh` does both).
 - **`--lemmas` cannot test division lemmas.** pyk accepts six rule attributes and hard-errors
   on `preserves-definedness`, so the fast loop returns false negatives for every rule whose
   LHS contains a partial symbol. Those must go through a rebuild.
