@@ -296,15 +296,16 @@ module SWAPVM-LEMMAS
 // Floor-division transfer rules, needed to finish the round-trip goals once the shifts
 // become divisions. Soundness: for A >= 0, B > 0, floor(A/B) < C <=> A < C*B, etc.
 // DERIVABLE.
+// Priority 40: these race rules of the same shape in KONTROL-AUX-LEMMAS at the default 50.
     rule [div-lt-transfer]:
       A /Int B <Int C => true
       requires 0 <=Int A andBool 0 <Int B andBool A <Int C *Int B
-      [simplification, preserves-definedness]
+      [simplification(40), preserves-definedness]
 
     rule [div-ge-transfer]:
       C <=Int A /Int B => true
       requires 0 <=Int A andBool 0 <Int B andBool C *Int B <=Int A
-      [simplification, preserves-definedness]
+      [simplification(40), preserves-definedness]
 
 // Pins a quotient from a two-sided window -- the shape the unscaleValue round trip needs.
     rule [div-eq-from-window]:
@@ -312,10 +313,15 @@ module SWAPVM-LEMMAS
       requires 0 <=Int A andBool 0 <Int B
        andBool C *Int B <=Int A
        andBool A <Int ( C +Int 1 ) *Int B
-      [simplification, comm, preserves-definedness]
+      [simplification(40), comm, preserves-definedness]
 
 // Bridge shifts to arithmetic. Priority 60 so KEVM's `asWord-shr` (default 50) still wins
 // on byte-level goals -- do not raise it.
+//
+// NOT a duplicate of Kontrol's aux `shift-to-div`, despite looking like one. That version
+// lacks `preserves-definedness` and is therefore discarded by the Booster before matching
+// (same failure mode as the mul512 rules in Section 6). Ours is the live one. Do not
+// "de-duplicate" it away.
     rule [shiftl-to-mul]:
       X <<Int N => X *Int ( 2 ^Int N )
       requires 0 <=Int X andBool 0 <=Int N
@@ -349,27 +355,37 @@ module SWAPVM-LEMMAS
 //
 // Once this fires the fast path returns `low / denominator` = `(X *Int Y) /Int D`, the
 // textbook form the Section 4 division lemmas already handle. No mulDiv summary needed.
+//
+// !! `preserves-definedness` IS LOAD-BEARING ON BOTH RULES BELOW. !!
+// `modInt` is a partial symbol, so without the attribute the Booster discards the rule
+// BEFORE attempting to match it, logging
+//     'failure','continue'  Uncertain about definedness of rule due to:
+//                           non-total symbol Lbl_modInt_
+// The rule is then dead: it never fires, and nothing in the build or the proof output says
+// so. Both rules shipped without it and were dead until a Booster log was inspected
+// directly. Do not remove it. See LEMMA-CRAFT.md for how to read those logs.
+//
+// This also means the `--lemmas` fast loop CANNOT test these: pyk's Kore converter accepts
+// only six rule attributes and hard-errors on `preserves-definedness`, so a fast-loop run
+// gives a false negative for every division lemma in this file. Test them via a rebuild.
 
     rule [mul512-high-zero]:
       chop ( ( ( X *Int Y ) modInt maxUInt256 ) -Int chop ( X *Int Y ) )
         ==Int bool2Word ( ( ( X *Int Y ) modInt maxUInt256 ) <Int chop ( X *Int Y ) )
       => true
       requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int pow256
-      [simplification, comm]
+      [simplification, comm, preserves-definedness]
 
     rule [mul512-high-zero-nochop]:
       chop ( ( ( X *Int Y ) modInt maxUInt256 ) -Int ( X *Int Y ) )
         ==Int bool2Word ( ( ( X *Int Y ) modInt maxUInt256 ) <Int ( X *Int Y ) )
       => true
       requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int pow256
-      [simplification, comm]
+      [simplification, comm, preserves-definedness]
 
-// KEVM's `A modInt B => A` needs the STRICT bound, which a harness assumption of the usual
-// form `X <= maxUInt256 / Y` does not supply. DERIVABLE.
-    rule [mulmod-maxuint-collapse]:
-      ( X *Int Y ) modInt maxUInt256 => X *Int Y
-      requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int maxUInt256
-      [simplification, preserves-definedness]
+// REMOVED: `mulmod-maxuint-collapse` duplicated KEVM's stock `A modInt B => A`, including
+// the strictness the comment claimed was missing. Restating a stock rule adds a matching
+// candidate for no gain and risks racing the original.
 
 // ---------------------------------------------------------------------------
 // Section 7: symbolic squares
