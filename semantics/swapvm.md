@@ -271,6 +271,7 @@ Then the two pricing directions.
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT ==Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+    [priority(50)]
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
        <isExactIn> true </isExactIn>
@@ -279,6 +280,7 @@ Then the two pricing directions.
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT =/=Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+    [priority(60)]
 
   rule <k> #exec ( 83 , ARGS ) => .K ... </k>
        <isExactIn> false </isExactIn>
@@ -288,6 +290,7 @@ Then the two pricing directions.
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN ==Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+    [priority(50)]
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
        <isExactIn> false </isExactIn>
@@ -296,6 +299,7 @@ Then the two pricing directions.
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN =/=Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+    [priority(60)]
 ```
 
 Malformed arguments on a MODELLED opcode

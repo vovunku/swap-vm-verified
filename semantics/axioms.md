@@ -17,9 +17,9 @@ each one. See `PLAN.md` §5a for the model.
 |---|---|---|---|---|
 | `0x23` | `OnlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | `TESTED` | `InstructionConformance.t.sol` |
 | `0x90` | `StaticBalances` | `Balances.sol:37-47` | `TESTED` | `InstructionConformance.t.sol` (both orientations) |
-| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | **`DEFECTIVE`** | see open defect D-1 below |
+| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | `InstructionConformance.t.sol`; D-1 fixed |
 
-## OPEN DEFECT D-1 — `0x53` diverges on reversed token order
+## DEFECT D-1 — FIXED. `0x53` diverged on reversed token order
 
 **Found by conformance, on a clean build, reproducible.** The semantics is WRONG for
 exact-in when `tokenIn > tokenOut`.
@@ -47,7 +47,29 @@ are modelled as reverting when they price. Any theorem touching `0x53` on that b
 unsound. The Phase 1 gate theorem is unaffected: it reverts at the gate and never reaches
 `0x53`.
 
-**Not fixed. Do not mark `0x53` `TESTED` until it is.**
+**FIXED.** Cause: rule *selection*, not matching. The pricing rule and the recompute rule for
+a given direction were both candidates for `#exec(83, _)`, and their `requires` clauses being
+mutually exclusive on paper did not determine which K selected — with equal priority the
+choice is unspecified, and it took the recompute arm. Adding `[priority(50)]` to the two
+pricing rules and `[priority(60)]` to the two recompute arms makes the intended order explicit.
+
+Verified on a clean rebuild — all four direction combinations now match Solidity:
+
+| case | direction byte | Solidity | K |
+|---|---|---|---|
+| `tokenIn < tokenOut` | `0x01` | `amountOut = 2e18` | `2e18` ✓ |
+| `tokenIn > tokenOut` | `0x00` | `amountOut = 0.5e18` | `0.5e18` ✓ |
+| `tokenIn < tokenOut` | `0x00` | mismatch | mismatch ✓ |
+| `tokenIn > tokenOut` | `0x01` | mismatch | mismatch ✓ |
+
+**Lesson worth keeping: overlapping rules need explicit priorities even when their side
+conditions look disjoint.** Mutual exclusion in the `requires` is not a selection order. The
+same class of mistake sat in `lemmas.k` for the whole project — four rules dead because a
+general rule shadowed them at equal priority. Second occurrence, same root cause.
+
+Diagnosis that worked, after several that did not: `krun --depth N` to step to the exact
+configuration before the dispatch and read the cells, rather than reasoning about what should
+match. Renaming the two recompute arms apart identified which one fired.
 
 **Downgraded after review.** A reviewer established that `semantics/conformance/run.sh` had
 been broken since Phase 1 — it passed only `$PGM` while the configuration had grown six more
@@ -139,8 +161,17 @@ inconsistent and every result above it is void. See `PLAN.md` §5a.
 
 | Control | Expected | Result |
 |---|---|---|
-| `negative-control.k` — an *arbitrary* program reverts `TakerTokenBalanceIsZero` | must FAIL | **FAILS correctly** (`kprove` exit 1) |
+| `negative-control.k` — gate first, balance NON-zero, asserts `Reverted` | must FAIL | **FAILS at `<pc> 22`, `<status> Running`** — a real computed counterexample |
+| `control-sensitivity.k` — identical premises, conclusion `Running` | must PROVE | **`#Top`** |
 
-The claim drops the gate prefix and asserts every program reverts. It does not — the empty
-program terminates `Running`. If this ever proves, the rule set is inconsistent and every
-result above it is void.
+The pair is the point. A control that fails proves nothing on its own — it may be failing for
+an incidental reason. The sensitivity witness has the same setup and the correct conclusion and
+**proves**, which shows `kprove` is discriminating on the conclusion rather than choking on the
+premises.
+
+**The previous control was inert and has been replaced.** It dropped the gate prefix and
+asserted an arbitrary program reverts. It did fail — but at `<pc> 0`, before any instruction
+executed, on a residual branch where no decode rule applies to a symbolic first byte. A review
+established the decisive fact: a claim that is *true* fails with a byte-identical residual. It
+would have kept "failing correctly" with every instruction rule deleted. **A negative control
+with a symbolic prefix cannot discriminate** — the prefix must be concrete.

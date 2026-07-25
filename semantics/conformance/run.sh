@@ -51,9 +51,10 @@ for c in "${CASES[@]}"; do
       "cd $REMOTE && su user -c 'PATH=/usr/bin:/bin krun --definition swapvm-llvm \
          -cPGM=\$(cat _conf_lit.txt) \
          -cTAKER=4660 -cTOKENIN=1 -cTOKENOUT=2 \
-         -cAMOUNTIN=0 -cAMOUNTOUT=0 -cEXACTIN=true -cBALANCES=.Map'" 2>&1)
+         -cAMOUNTIN=1000000000000000000 -cAMOUNTOUT=0 -cEXACTIN=true \
+         -cBALANCES=\"$bals\"'" 2>&1)
   pc=$(echo "$out"  | sed -n '/<pc>/,/<\/pc>/p'         | tr -d '\n <>/pc' | tr -d ' ')
-  st=$(echo "$out"  | sed -n '/<status>/,/<\/status>/p' | grep -oE 'Running;Reverted' | head -1)
+  st=$(echo "$out"  | sed -n '/<status>/,/<\/status>/p' | grep -oE 'Running|Reverted' | head -1)
 
   if [ "$pc" = "$want_pc" ] && [ "$st" = "$want_st" ]; then
     printf '  %-14s pc=%-4s %-9s OK\n' "$label" "$pc" "$st"
