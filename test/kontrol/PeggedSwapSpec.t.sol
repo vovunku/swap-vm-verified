@@ -105,19 +105,80 @@ contract PeggedSwapSpec is Test {
     address internal constant TOKEN_LO = address(uint160(1));
     address internal constant TOKEN_HI = address(uint160(2));
 
-    /// @dev `immutable` rather than `constant`: solc does not classify an error selector as
-    ///      a compile-time constant, though it is one. Immutables are baked into the
-    ///      deployed bytecode, so under Kontrol these read as concrete values with no
-    ///      storage access.
-    bytes4 internal immutable SEL_ARGS_LENGTH = PeggedSwapArgsBuilder.PeggedSwapInvalidArgsLength.selector;
-    bytes4 internal immutable SEL_INIT_BALANCES = PeggedSwapArgsBuilder.PeggedSwapInvalidInitialBalances.selector;
-    bytes4 internal immutable SEL_LINEAR_WIDTH = PeggedSwapArgsBuilder.PeggedSwapInvalidLinearWidth.selector;
-    bytes4 internal immutable SEL_RATES = PeggedSwapArgsBuilder.PeggedSwapInvalidRates.selector;
-    bytes4 internal immutable SEL_BOTH_ZERO = PeggedSwap.PeggedSwapBothBalancesZero.selector;
-    bytes4 internal immutable SEL_RECOMPUTE = PeggedSwap.PeggedSwapRecomputeDetected.selector;
-    bytes4 internal immutable SEL_NO_SOLUTION = PeggedSwapMath.PeggedSwapMathNoSolution.selector;
-    bytes4 internal immutable SEL_INVALID_INPUT = PeggedSwapMath.PeggedSwapMathInvalidInput.selector;
-    bytes4 internal immutable SEL_PANIC = bytes4(keccak256("Panic(uint256)"));
+    /// @dev The expected selectors, as `internal pure` accessors rather than as state.
+    ///
+    ///      NOT `immutable`, and this is load-bearing under Kontrol — an earlier revision of
+    ///      this file used `immutable` and it silently broke every proof in the file that
+    ///      inspects a selector.
+    ///
+    ///      An `immutable` is not part of the compiled runtime object. solc emits zero
+    ///      placeholders in `deployedBytecode` plus an `immutableReferences` map, and the
+    ///      real values are substituted by the **constructor**, at deployment. Kontrol loads
+    ///      the test contract straight from `deployedBytecode` and, unless `run-constructor`
+    ///      is enabled — it is `false` in `kontrol.toml`, matching Kontrol's default — never
+    ///      runs that constructor. So under `kontrol prove` all nine read back as
+    ///      `0x00000000`, while reading correctly under `forge test`, which does deploy.
+    ///
+    ///      The symptom is a proof that fails on a *selector* comparison while the identical
+    ///      test passes the fuzzer, e.g. `test_knownUnderflow_exactOutAtLargeReserves`
+    ///      failing its `== _selPanic()` assertion because `0x4e487b71 != 0x00000000`. That is
+    ///      not KEVM and revm disagreeing about the EVM: they agree on every byte of the
+    ///      execution and both produce the same `Panic(0x11)`. They disagree only about
+    ///      whether a constructor ran.
+    ///
+    ///      `constant` would be the natural fix but solc rejects it — an error selector is
+    ///      not a compile-time constant expression (error 8349), though it is one in fact.
+    ///      An `internal pure` accessor is accepted, and it resolves entirely inside the
+    ///      runtime object: after this change the artifact's `immutableReferences` map is
+    ///      empty, i.e. nothing in `deployedBytecode` is left for a constructor to fill in.
+    ///      No storage read either, and no `KECCAK256` on any proof path.
+    ///
+    ///      Check after touching this block:
+    ///        python3 -c "import json;print(json.load(open(
+    ///          'out/PeggedSwapSpec.t.sol/PeggedSwapSpec.json'))['deployedBytecode']
+    ///          .get('immutableReferences'))"
+    ///      It must print `None` or `{}`. Anything else is a value Kontrol will read as zero.
+    function _selArgsLength() internal pure returns (bytes4) {
+        return PeggedSwapArgsBuilder.PeggedSwapInvalidArgsLength.selector;
+    }
+
+    function _selInitBalances() internal pure returns (bytes4) {
+        return PeggedSwapArgsBuilder.PeggedSwapInvalidInitialBalances.selector;
+    }
+
+    function _selLinearWidth() internal pure returns (bytes4) {
+        return PeggedSwapArgsBuilder.PeggedSwapInvalidLinearWidth.selector;
+    }
+
+    function _selRates() internal pure returns (bytes4) {
+        return PeggedSwapArgsBuilder.PeggedSwapInvalidRates.selector;
+    }
+
+    function _selBothZero() internal pure returns (bytes4) {
+        return PeggedSwap.PeggedSwapBothBalancesZero.selector;
+    }
+
+    function _selRecompute() internal pure returns (bytes4) {
+        return PeggedSwap.PeggedSwapRecomputeDetected.selector;
+    }
+
+    function _selNoSolution() internal pure returns (bytes4) {
+        return PeggedSwapMath.PeggedSwapMathNoSolution.selector;
+    }
+
+    function _selInvalidInput() internal pure returns (bytes4) {
+        return PeggedSwapMath.PeggedSwapMathInvalidInput.selector;
+    }
+
+    /// @dev Solidity exposes no `Panic.selector`, so the ABI's panic selector is spelled out.
+    ///      A literal rather than `bytes4(keccak256("Panic(uint256)"))`: the hash of a string
+    ///      literal is only folded away by the optimiser, and if it were not folded it would
+    ///      put a `KECCAK256` on every proof path — which the revert-data helpers below go out
+    ///      of their way to avoid, since KEVM treats `keccak` as an uninterpreted function.
+    ///      `test_panicSelectorIsTheAbiPanicSelector` pins the literal against the hash.
+    function _selPanic() internal pure returns (bytes4) {
+        return 0x4e487b71;
+    }
 
     function setUp() public {
         harness = new PeggedSwapHarness();
@@ -299,7 +360,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, data);
 
         bool shouldFire = data.length < 160;
-        _assertGuard(shouldFire, ok, err, SEL_ARGS_LENGTH, "args-length guard must fire exactly below 160 bytes");
+        _assertGuard(shouldFire, ok, err, _selArgsLength(), "args-length guard must fire exactly below 160 bytes");
 
         if (!ok && shouldFire) {
             assertEq(_errorArg(err, 0), data.length, "guard must report the actual args length");
@@ -332,7 +393,7 @@ contract PeggedSwapSpec is Test {
 
         bool shouldFire = x0 == 0 || y0 == 0;
         _assertGuard(
-            shouldFire, ok, err, SEL_INIT_BALANCES, "initial-balances guard must fire exactly on a zero normaliser"
+            shouldFire, ok, err, _selInitBalances(), "initial-balances guard must fire exactly on a zero normaliser"
         );
 
         if (!ok && shouldFire) {
@@ -362,7 +423,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, 1, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         bool shouldFire = linearWidth > MAX_LINEAR_WIDTH;
-        _assertGuard(shouldFire, ok, err, SEL_LINEAR_WIDTH, "linear-width guard must fire exactly above 5000e27");
+        _assertGuard(shouldFire, ok, err, _selLinearWidth(), "linear-width guard must fire exactly above 5000e27");
 
         if (!ok && shouldFire) {
             assertEq(_errorArg(err, 0), linearWidth, "guard must report the offending linear width");
@@ -378,7 +439,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, 1, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_LINEAR_WIDTH, "linearWidth == MAX must be accepted");
+            assertTrue(_selectorOf(err) != _selLinearWidth(), "linearWidth == MAX must be accepted");
         }
     }
 
@@ -405,7 +466,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, 1, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         bool shouldFire = rateLt == 0 || rateGt == 0;
-        _assertGuard(shouldFire, ok, err, SEL_RATES, "rates guard must fire exactly on a zero rate");
+        _assertGuard(shouldFire, ok, err, _selRates(), "rates guard must fire exactly on a zero rate");
 
         if (!ok && shouldFire) {
             assertEq(_errorArg(err, 0), rateLt, "guard must report rateLt");
@@ -443,7 +504,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(0, 0, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         assertFalse(ok, "both balances zero must revert");
-        assertTrue(_selectorOf(err) == SEL_BOTH_ZERO, "both-balances-zero guard must fire with its own selector");
+        assertTrue(_selectorOf(err) == _selBothZero(), "both-balances-zero guard must fire with its own selector");
     }
 
     /// @notice The guard never fires when at least one balance is non-zero.
@@ -472,7 +533,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_BOTH_ZERO, "guard must not fire when one balance is non-zero");
+            assertTrue(_selectorOf(err) != _selBothZero(), "guard must not fire when one balance is non-zero");
         }
     }
 
@@ -511,7 +572,7 @@ contract PeggedSwapSpec is Test {
         }
 
         assertFalse(ok, "a pre-set amountOut must be rejected");
-        assertTrue(_selectorOf(err) == SEL_RECOMPUTE, "execution must reach the recompute guard, i.e. pass :104");
+        assertTrue(_selectorOf(err) == _selRecompute(), "execution must reach the recompute guard, i.e. pass :104");
     }
 
     /// @notice A zero *output* balance alone passes the guard. Mirror of the above.
@@ -544,7 +605,7 @@ contract PeggedSwapSpec is Test {
         }
 
         assertFalse(ok, "a pre-set amountOut must be rejected");
-        assertTrue(_selectorOf(err) == SEL_RECOMPUTE, "execution must reach the recompute guard, i.e. pass :104");
+        assertTrue(_selectorOf(err) == _selRecompute(), "execution must reach the recompute guard, i.e. pass :104");
     }
 
     // =======================================================================
@@ -631,7 +692,7 @@ contract PeggedSwapSpec is Test {
         }
 
         assertFalse(ok, "exact-in recompute guard must reject a pre-set amountOut");
-        assertTrue(_selectorOf(err) == SEL_RECOMPUTE, "exact-in recompute guard must use its own selector");
+        assertTrue(_selectorOf(err) == _selRecompute(), "exact-in recompute guard must use its own selector");
     }
 
     /// @notice The exact-in recompute guard never fires when `amountOut == 0`.
@@ -648,7 +709,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_RECOMPUTE, "recompute guard must not fire on a clean amountOut register");
+            assertTrue(_selectorOf(err) != _selRecompute(), "recompute guard must not fire on a clean amountOut register");
         }
     }
 
@@ -721,7 +782,7 @@ contract PeggedSwapSpec is Test {
         }
 
         assertFalse(ok, "exact-out recompute guard must reject a pre-set amountIn");
-        assertTrue(_selectorOf(err) == SEL_RECOMPUTE, "exact-out recompute guard must use its own selector");
+        assertTrue(_selectorOf(err) == _selRecompute(), "exact-out recompute guard must use its own selector");
     }
 
     /// @notice The exact-out recompute guard never fires when `amountIn == 0`. Full domain.
@@ -737,7 +798,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_RECOMPUTE, "recompute guard must not fire on a clean amountIn register");
+            assertTrue(_selectorOf(err) != _selRecompute(), "recompute guard must not fire on a clean amountIn register");
         }
     }
 
@@ -956,7 +1017,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_NO_SOLUTION, "PeggedSwapMathNoSolution must be unreachable");
+            assertTrue(_selectorOf(err) != _selNoSolution(), "PeggedSwapMathNoSolution must be unreachable");
         }
     }
 
@@ -973,7 +1034,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_NO_SOLUTION, "PeggedSwapMathNoSolution must be unreachable");
+            assertTrue(_selectorOf(err) != _selNoSolution(), "PeggedSwapMathNoSolution must be unreachable");
         }
     }
 
@@ -1009,7 +1070,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
-            assertTrue(_selectorOf(err) != SEL_INVALID_INPUT, "PeggedSwapMathInvalidInput must be unreachable");
+            assertTrue(_selectorOf(err) != _selInvalidInput(), "PeggedSwapMathInvalidInput must be unreachable");
         }
     }
 
@@ -1027,13 +1088,22 @@ contract PeggedSwapSpec is Test {
     //    as a failing test rather than as silence.
     // =======================================================================
 
+    /// @notice `_selPanic()` really is `bytes4(keccak256("Panic(uint256)"))`.
+    /// @dev The one place in this file where a `keccak256` is evaluated, and the reason the
+    ///      other eight selectors are derived from `.selector` rather than hardcoded. Fully
+    ///      concrete on both sides, so KEVM discharges it with its concrete `keccak` rule and
+    ///      no uninterpreted hash term ever enters a path condition.
+    function test_panicSelectorIsTheAbiPanicSelector() public pure {
+        assertTrue(_selPanic() == bytes4(keccak256("Panic(uint256)")), "panic selector literal has drifted");
+    }
+
     function test_knownUnderflow_exactOutAtLargeReserves() public view {
         bytes memory args = _args(1e30, 1e30, 0, 1, 1);
 
         (bool ok, bytes memory err,) = _tryExactOut(1e30 + 1, 1, 1, TOKEN_LO, TOKEN_HI, args);
 
         assertFalse(ok, "recorded witness must still revert");
-        assertTrue(_selectorOf(err) == SEL_PANIC, "recorded witness must revert with a Panic, not a custom error");
+        assertTrue(_selectorOf(err) == _selPanic(), "recorded witness must revert with a Panic, not a custom error");
         assertEq(_errorArg(err, 0), 0x11, "recorded witness must be an arithmetic underflow, Panic(0x11)");
     }
 
@@ -1061,7 +1131,7 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(1, 1, 1e24, TOKEN_LO, TOKEN_HI, args);
 
         assertFalse(ok, "recorded witness must still revert");
-        assertTrue(_selectorOf(err) == SEL_PANIC, "recorded witness must revert with a Panic, not a custom error");
+        assertTrue(_selectorOf(err) == _selPanic(), "recorded witness must revert with a Panic, not a custom error");
         assertEq(_errorArg(err, 0), 0x11, "recorded witness must be an arithmetic overflow, Panic(0x11)");
     }
 
