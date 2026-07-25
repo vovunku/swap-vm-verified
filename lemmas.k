@@ -160,6 +160,51 @@ module SWAPVM-LEMMAS
        andBool 0 <Int B
       [simplification, preserves-definedness]
 
+// The contraction `balance * S >> 24 <= balance` at PiecewiseLinearScale.sol:102/:110/:57,
+// once the SHR has become a division. Section 4 had no `<=` transfer at all, and
+// `div-le-self` gives the wrong bound -- `A /Int B <=Int A`, not `<=Int` the cofactor.
+// The side condition here is LINEAR (`B <=Int C`), unlike a generic `A <=Int C *Int B`.
+// Soundness: for A >= 0, 0 <= B <= C, 0 < C: A*B <= A*C, so floor(A*B/C) <= floor(A*C/C) = A.
+// DERIVABLE. Expected to close scaleNeverExpands, unscaleIsMinimal and both
+// neverExpandsBalance* properties.
+    rule [mul-div-contract]:
+      ( A *Int B ) /Int C <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <Int C andBool B <=Int C
+      [simplification, preserves-definedness]
+
+    rule [mul-div-contract-comm]:
+      ( B *Int A ) /Int C <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <Int C andBool B <=Int C
+      [simplification, preserves-definedness]
+
+// `/Word` with a symbolic divisor never becomes `/Int`: its two defining rules
+// (evm-types.md:105-106) are guarded on `W1 ==Int 0` and `W1 =/=Int 0`, and neither applies
+// when the divisor is itself the symbolic multiplicand -- which is exactly the case solc's
+// `iszero(a)` disjunct exists to cover. Every KEVM overflow lemma is stated over `/Int`, so
+// none of them can match. This bridges the gap.
+// Soundness: `/Word` is `/Int` for a non-zero divisor. DERIVABLE.
+    rule [div-word-to-int]:
+      A /Word B => A /Int B
+      requires 0 <Int B
+      [simplification, preserves-definedness]
+
+// Solidity 0.8's checked-multiply guard, in the shape solc actually emits:
+// `or(iszero(a), eq(div(mul(a,b),a), b))`. Reaches KEVM as a bitwise `|Int` over two
+// `bool2Word`s with an unreduced `/Word` inside. Section 8's `bool2word-or` handles the
+// disjunction; this handles the whole guard.
+// Soundness: the guard holds iff the product did not overflow. DERIVABLE.
+    rule [mul-guard-word]:
+      bool2Word ( chop ( A *Int B ) /Word A ==Int B ) |Int bool2Word ( A ==Int 0 )
+        => bool2Word ( A *Int B <Int pow256 )
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification]
+
+    rule [mul-guard-word-comm]:
+      bool2Word ( A ==Int 0 ) |Int bool2Word ( chop ( A *Int B ) /Word A ==Int B )
+        => bool2Word ( A *Int B <Int pow256 )
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification]
+
 // Soundness: if A < B then floor(A / B) = 0, for B > 0 and A >= 0.
     rule [div-lt-is-zero]:
       A /Int B => 0

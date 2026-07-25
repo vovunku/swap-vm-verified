@@ -23,6 +23,15 @@ docker exec kontrol bash -c "cd /home/user/swap-vm-verified && su user -c \
 Note the `su user -c` form. `docker exec -u user … kontrol list` returns empty output silently
 on this host, which has twice been mistaken for lost proof state.
 
+**`kontrol list` is expensive** — 2-4 minutes and ~2.6 GB RSS on a store this size, and
+several agents polling it concurrently was itself a source of load. The same verdicts come
+from `proof.json` + `kcfg/kcfg.json` in under a second: a leaf is closed iff it is target,
+terminal, covered, vacuous or bounded. Prefer that for routine checks.
+
+**This file has undercounted.** An audit found `PiecewiseLinearScale` at 16 proven while the
+map said 6 — ten PASSED proofs unrecorded, because the map was updated from agent reports
+rather than from the store. Regenerate from the store, never from a summary.
+
 > **Naming.** "Track A" and "Track B" are the split of work between the two people on this
 > project — Track A is `Controls`, `MinRate`, `Balances`, `LimitSwap`; Track B is `XYCSwap`,
 > `PeggedSwap`, `XYCConcentrate`, `PiecewiseLinearScale`, `Power`. Nothing else uses A/B.

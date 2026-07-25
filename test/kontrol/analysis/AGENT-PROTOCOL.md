@@ -24,6 +24,13 @@ and six more accumulated within an hour. Reap before trusting any timing.
 document. Two agents never hold the same file. This is what makes the work parallel-safe;
 `lemmas.k`, `kontrol.toml` and `foundry.toml` are coordinator-only for the same reason.
 
+> **The coordinator has broken this rule.** Two agents were dispatched onto
+> `PiecewiseLinearScaleSpec` simultaneously; each discovered the other only after both had
+> been proving into the same directories, and roughly 20 minutes on each side went to
+> detecting and working around it. Before dispatching, check the live agent list against the
+> file. A second agent on a file is worse than no agent — they race the same proof store and
+> one will kill the other's run.
+
 **Builds are serialized, proofs are not.** `kontrol build` mutates the single shared K
 definition and only the coordinator runs it. Any number of agents may run `kontrol prove`
 concurrently against a stable definition, capped at `--workers 3` each.
@@ -150,7 +157,11 @@ property killed. A property that killed nothing is not yet a property.
 End your report with a section titled `HANDOFF` containing:
 
 - **Status table** — every property in your file with its final state: PASSED, FAILED,
-  stalled-at-N-nodes, not-attempted, or excluded-with-reason.
+  stalled-at-N-nodes, not-attempted, or excluded-with-reason. Derive it from the proof store,
+  not from `PROOF-MAP.md` — the map has been found to undercount by 10 on a single spec, and
+  `kontrol list` costs 2-4 minutes and ~2.6 GB. A leaf is closed iff it is target, terminal,
+  covered, vacuous or bounded; reading `proof.json` + `kcfg/kcfg.json` gives the same verdicts
+  in under a second.
 - **Per stalled proof** — the node id, the ACTUAL blocking term you dumped, and what would
   close it. Not a guess at what might be wrong.
 - **Lemmas that worked** — exact K text, ready to merge. The highest-value part of the report.
