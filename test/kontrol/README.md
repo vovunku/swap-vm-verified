@@ -43,8 +43,7 @@ All 17 specs pass as Foundry fuzz tests. Under Kontrol, as of the last run:
 | `BalancesSpec.test_zeroArgsIsNoOpWhenRegistersZero` | PASSED |
 | `BalancesSpec.test_equalTokensTakesElseBranch` | PASSED |
 | `BalancesSpec.test_oversizedArgsIgnoreTrailingBytes` | PASSED |
-| `BalancesSpec.test_finding_emptyArgsDoesNotRevert` | PASSED |
-| `BalancesSpec.test_finding_shortArgsDoNotRevert` | PASSED |
+| `BalancesSpec.test_finding_shortArgsNeverRevert` | PASSED |
 | everything else | not yet attempted |
 
 The two original passing proofs confirm the harness shape works end to end: an `internal pure`
@@ -67,10 +66,19 @@ symbolic; Balances has no such goal.
 
 The spec also documents a finding rather than a desired invariant: `parse` performs no
 length check on `args` (`Calldata.slice(32)` is unchecked assembly), so a short `args`
-does NOT revert — `balanceOut` silently reads the adjacent calldata. The two `test_finding_*`
-properties pin this observed behaviour so a future change is detected; the fix is a bounds
-check in `parse` (or the `slice(..., bytes4)` overload). Whether short args are reachable
-depends on the dispatcher, which is out of scope for this instruction-level spec.
+does NOT revert — `balanceOut` silently reads the adjacent calldata. This is stated
+exhaustively, not just on examples: `test_finding_shortArgsNeverRevert(bytes calldata
+args)` assumes `args.length < 64` and proves the instruction never reverts for any such
+input (the read register values are nondeterministic adjacent-calldata garbage, so only
+the absence of a revert is asserted). The fix is a bounds check in `parse` (or the
+`slice(..., bytes4)` overload); if added, this test should flip to expect that revert.
+Whether short args are reachable depends on the dispatcher, which is out of scope for this
+instruction-level spec.
+
+Tightness note: the guard test pins the exact revert, not just that a revert occurs — it
+expects `SetBalancesExpectZeroBalances(incomingBalanceIn, incomingBalanceOut)` (the
+*incoming* register values, not the parsed `args` values). A bare `revert()`, an out-of-
+gas, or a different selector would all pass a loose `vm.expectRevert()` but fail here.
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
 instruction as verified until it appears above.

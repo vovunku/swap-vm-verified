@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import { Test } from "forge-std/Test.sol";
 
+import { Balances } from "../../../src/instructions/Balances.sol";
 import { BalancesHarness } from "./harnesses/BalancesHarness.sol";
 
 /// @notice Kontrol specification for the `Balances._staticBalancesXD` instruction.
@@ -98,11 +99,17 @@ contract BalancesSpec is Test {
     // The zero-balance guard: second application is rejected, not idempotent
     // -----------------------------------------------------------------------
 
-    /// @notice Any non-zero incoming balance register causes a revert.
+    /// @notice Any non-zero incoming balance register reverts with the exact guard
+    ///         error `SetBalancesExpectZeroBalances(incomingBalanceIn, incomingBalanceOut)`.
     /// @dev This is what makes a second application fail: after the first call sets the
     ///      registers from `args`, at least one is non-zero (unless `args` was all zeros),
     ///      so a repeat call hits the guard. The instruction is therefore *not* idempotent;
     ///      it refuses to overwrite an already-populated register pair.
+    ///
+    ///      The revert payload is pinned, not just the fact of a revert: a bare `revert()`,
+    ///      an out-of-gas, or a different selector would all pass `vm.expectRevert()` but
+    ///      would be a behaviour change. The error carries the *incoming* register values
+    ///      (not the parsed `args` values), matching the source `require(...)`.
     function test_revertsUnlessBothIncomingBalancesZero(
         address tokenIn,
         address tokenOut,
@@ -113,31 +120,27 @@ contract BalancesSpec is Test {
     ) public {
         vm.assume(incomingBalanceIn != 0 || incomingBalanceOut != 0);
 
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Balances.SetBalancesExpectZeroBalances.selector, incomingBalanceIn, incomingBalanceOut
+            )
+        );
         harness.applyStatic(tokenIn, tokenOut, incomingBalanceIn, incomingBalanceOut, _args(balanceA, balanceB));
     }
 
-    /// @notice The guard accepts the all-zero incoming state, which is the only way the
-    ///         instruction is permitted to run. Combined with the property above, this pins
-    ///         the guard exactly: revert iff (bin != 0 || bout != 0).
+    /// @notice The guard accepts the all-zero incoming state — the complement of the property
+    ///         above, pinning the guard exactly: revert iff (bin != 0 || bout != 0).
+    /// @dev Non-revert *is* the property here, so the post-state values are asserted by the
+    ///      ordering test rather than duplicated below.
     function test_succeedsWithBothIncomingBalancesZero(
         address tokenIn,
         address tokenOut,
         uint256 balanceA,
         uint256 balanceB
-    ) public view {
+    ) public {
         vm.assume(tokenIn != tokenOut);
 
-        (uint256 bin, uint256 bout) = harness.applyStatic(tokenIn, tokenOut, 0, 0, _args(balanceA, balanceB));
-
-        // Result matches the ordering property — sanity that the "happy path" agrees.
-        if (tokenIn < tokenOut) {
-            assertEq(bin, balanceA);
-            assertEq(bout, balanceB);
-        } else {
-            assertEq(bin, balanceB);
-            assertEq(bout, balanceA);
-        }
+        harness.applyStatic(tokenIn, tokenOut, 0, 0, _args(balanceA, balanceB));
     }
 
     // -----------------------------------------------------------------------
@@ -204,39 +207,26 @@ contract BalancesSpec is Test {
     // `uint256(bytes32(args))` and `uint256(bytes32(args.slice(32)))`. The `Calldata.slice`
     // variant used here is unchecked assembly (`node_modules/@1inch/solidity-utils/.../
     // Calldata.sol`): when `args.length < 64` it does NOT revert — `slice(32)` underflows
-    // the length and `bytes32` reads whatever bytes happen to follow in calldata.
+    // the length and `bytes2` reads whatever bytes happen to follow in calldata.
     //
-    // The tests below pin the *observed* behaviour so a future change to either `parse` or
-    // `Calldata.slice` is detected. They are NOT properties the instruction should be proud
-    // of: a proper fix is a length check in `parse` (or use the bounds-checked
-    // `slice(..., bytes4)` overload). Until then, a caller controlling the program/taker
-    // calldata can pass short args and have `balanceOut` (or both registers) read adjacent
-    // calldata rather than revert. Whether short args are reachable depends on the
-    // dispatcher, which is out of scope for this instruction-level spec.
+    // This is stated symbolically over `args.length`, not as concrete examples: the property
+    // is that for EVERY args shorter than 64 bytes, the instruction does not revert. A safe
+    // API would reject a short buffer; this one silently reads adjacent calldata instead.
+    // It is a documented bug, not a desired invariant — the fix is a length check in `parse`
+    // (or the bounds-checked `slice(..., bytes4)` overload). Whether short args are reachable
+    // depends on the dispatcher, which is out of scope for this instruction-level spec.
+    // (If a future fix adds the bounds check, this test should flip to expect that revert.)
 
-    /// @notice An empty `args` does not revert; both registers read adjacent calldata
-    ///         (which happens to be zero in this harness's calldata layout).
-    function test_finding_emptyArgsDoesNotRevert() public {
-        (uint256 bin, uint256 bout) = harness.applyStatic(address(1), address(2), 0, 0, "");
+    /// @notice For any `args` shorter than 64 bytes, the instruction does NOT revert — the
+    ///         missing length check. `balanceOut` (and possibly `balanceIn`) silently read
+    ///         adjacent calldata instead.
+    /// @dev Reaching the end of the test = no revert. The read register values are
+    ///      nondeterministic adjacent-calldata garbage, so there is nothing to assert beyond
+    ///      the absence of a revert. Zero incoming balances are used so the only candidate
+    ///      revert (the zero-balance guard) cannot fire, isolating the length-check gap.
+    function test_finding_shortArgsNeverRevert(bytes calldata args) public {
+        vm.assume(args.length < 64);
 
-        // Does not revert (no vm.expectRevert). The values read are an artefact of the
-        // external call's calldata layout, not a meaningful balance — pinned only to detect
-        // a change in the underlying unchecked slice.
-        assertEq(bin, 0, "empty args: balanceIn reads adjacent calldata");
-        assertEq(bout, 0, "empty args: balanceOut reads adjacent calldata");
-    }
-
-    /// @notice A single-word (32-byte) `args` does not revert; `balanceOut` reads the
-    ///         32 bytes immediately following `args[0]` in calldata rather than reverting.
-    function test_finding_shortArgsDoNotRevert() public {
-        // 32-byte args: balanceA is read correctly, balanceB reads adjacent calldata.
-        bytes memory args = abi.encodePacked(uint256(7));
-
-        (uint256 bin, uint256 bout) = harness.applyStatic(address(1), address(2), 0, 0, args);
-
-        // balanceIn == args[0] (the only real word); balanceOut is adjacent calldata (= 0
-        // in this layout). No revert occurs — the missing length check.
-        assertEq(bin, 7, "short args: balanceIn reads args[0]");
-        assertEq(bout, 0, "short args: balanceOut reads adjacent calldata (no revert)");
+        harness.applyStatic(address(1), address(2), 0, 0, args);
     }
 }
