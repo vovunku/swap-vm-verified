@@ -35,3 +35,13 @@ optimizer      = true
 optimizer_runs = 700
 via_ir         = true
 evm_version    = "cancun"
+
+# `out` must be set explicitly. Foundry defaults it to "out" internally, but Kontrol reads
+# the profile itself and defaults a missing key to the empty string, i.e. the repository
+# root (kontrol/foundry.py: `self._root / self.profile.get('out', '')`). Leaving it unset
+# scatters `kompiled/`, `digest` and `proofs/` across the repo root, and — because forge
+# still writes build-info to `out/build-info` — makes `kontrol show` and `kontrol view-kcfg`
+# fail outright with `ValueError: max() arg is an empty sequence`, since they look for
+# build-info at the root. Setting it also keeps every Kontrol artifact under the
+# already-gitignored `out/`.
+out            = "out"

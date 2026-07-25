@@ -99,8 +99,16 @@ Either run as that user, or copy the working tree to a path it owns.
 
 ## Build
 
-Run once after cloning, and again whenever contracts, `lemmas.k`, or compiler settings
-change. Everything below assumes the repository root as the working directory.
+> **Always build before proving.** `kontrol build` compiles the test contracts' *bytecode*
+> into the K definition, so the prover only ever sees contracts that existed at the last
+> build. Write a new spec file and run `kontrol prove` straight away and it reports that the
+> test does not exist — the definition genuinely has no such contract yet. Edit an existing
+> spec without rebuilding and you silently prove the **old** version. The loop is always
+> **edit → `kontrol build` → `kontrol prove`**.
+
+Run this once after cloning, and again after every change to a spec, a harness, a contract,
+`lemmas.k`, or the compiler settings. All commands assume the repository root as the working
+directory.
 
 ```bash
 # 1. Toolchain — Foundry and Kontrol, from the repo flake
@@ -115,17 +123,26 @@ FOUNDRY_PROFILE=kontrol kontrol build
 
 # 4. Confirm the lemmas actually compiled in. Expect a non-zero count.
 #    If this prints 0, see "Traps" below before trusting any proof result.
-grep -c 'mul-bound-transfer' kompiled/definition.kore
+grep -c 'mul-bound-transfer' out/kompiled/definition.kore
 ```
 
-`kontrol build` is incremental. Re-running it after editing only a spec file is cheap;
-after editing `lemmas.k` you need `--rekompile`, and after that always re-check step 4.
+After editing `lemmas.k`, step 3 needs `--rekompile`, and step 4 becomes mandatory rather
+than merely advisable.
+
+Kontrol tracks a per-method digest, so once you *have* rebuilt, `kontrol prove` notices a
+changed spec and starts a **new proof version** (`:1`, `:2`, …) instead of reusing the stale
+one — see `kontrol list`. That versioning protects you only from reusing old *results*; it
+cannot conjure bytecode that was never compiled, which is why the rebuild is not optional.
 
 ## Running proofs
 
 `--match-test` (short form `--mt`) takes a **regular expression** matched against the full
 test signature, so `ContractName\.` selects every property in one spec contract. The flag
 may be repeated to select several.
+
+Each of these assumes `FOUNDRY_PROFILE=kontrol kontrol build` has been run since the spec
+was last touched. If a command reports that the test does not exist, that is the missing
+step, not a bad regex.
 
 ```bash
 # Every property in one spec contract — the usual unit of work
@@ -211,6 +228,10 @@ rather than after an hour on the hardest property in the file.
 
 ## Traps
 
+**A new or edited spec is invisible until you rebuild.** `kontrol prove` will tell you the
+test does not exist — which reads like a typo in the `--match-test` regex, but means the
+contract was never compiled into the definition. Rebuild. See "Build" above.
+
 **A stale lemma file survives `--rekompile` silently.** Kontrol copies `lemmas.k` into
 `out/kompiled/requires/lemmas.k` at build time and does not always refresh that copy.
 `kontrol build --rekompile` will report `✅ Success` while having compiled the *previous*
@@ -218,21 +239,32 @@ version of your lemmas — so a proof that still fails looks like "the lemmas di
 when in fact they were never loaded. Always verify:
 
 ```bash
-grep -c 'mul-bound-transfer' kompiled/definition.kore   # expect > 0
+grep -c 'mul-bound-transfer' out/kompiled/definition.kore   # expect > 0
 ```
 
 If the count is zero, refresh the copy by hand and rebuild:
 
 ```bash
-cp lemmas.k kompiled/requires/lemmas.k && FOUNDRY_PROFILE=kontrol kontrol build --rekompile
+cp lemmas.k out/kompiled/requires/lemmas.k && FOUNDRY_PROFILE=kontrol kontrol build --rekompile
 ```
 
-Note the output location: in this repo `kontrol build` writes to a **top-level
-`kompiled/`**, not `out/kompiled/`. The path depends on the project's foundry `out`
-setting, so check `find . -maxdepth 2 -name definition.kore` before assuming either. Both
-`kompiled/` and the `digest` file are gitignored — the compiled definition is ~317 MB.
-
 This is why every rule in `lemmas.k` carries a unique label.
+
+**`out` must be set in the Foundry profile, or the tooling half-breaks.** Foundry defaults
+`out` to `out/`, but Kontrol reads the profile itself and defaults a missing key to the
+empty string — the repository root:
+
+```python
+def out(self) -> Path:
+    return self._root / self.profile.get('out', '')
+```
+
+With `out` unset, Kontrol scatters `kompiled/`, `digest` and `proofs/` across the repo root
+while forge still writes build-info to `out/build-info`. `kontrol prove` works, but
+`kontrol show` and `kontrol view-kcfg` fail outright with `ValueError: max() arg is an empty
+sequence`, because they look for build-info at the root — which removes exactly the tooling
+needed to diagnose a stuck proof. `[profile.kontrol]` sets `out = "out"` for this reason.
+If you see that `ValueError`, check the profile before anything else.
 
 **`--reinit` throws away everything.** After changing lemmas the cached proof is stale, but
 `--reinit` re-explores from scratch including `setUp`. Prefer pruning just the stuck
