@@ -45,3 +45,11 @@ evm_version    = "cancun"
 # build-info at the root. Setting it also keeps every Kontrol artifact under the
 # already-gitignored `out/`.
 out            = "out"
+
+# NOTE: a `skip = ["test/**", "!test/kontrol/**", ...]` setting was tried here to speed
+# up builds, but foundry's `skip` uses the `glob` crate, which does NOT support `!`
+# negation. With that line present, a clean build compiles ZERO test files (no
+# `out/*.t.sol/` artifacts), so `kontrol prove` fails with `Test identifiers not
+# found` for every spec. Do not re-add a negation-based skip. To skip the heavy
+# test tree, enumerate the paths explicitly (e.g. `skip = ["test/invariants/**",
+# ...]`) — a bare `test/**` always excludes `test/kontrol/` too.
