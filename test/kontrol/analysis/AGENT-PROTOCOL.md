@@ -77,19 +77,27 @@ runtime changes materially with the rule and not without it, or the label appear
 `APPLIED` in a `--haskell-log-dir` run. Report which method you used. Rules banked without
 this have already turned out to be inert.
 
-**`--lemmas` cannot test every rule, and a bad rule poisons the WHOLE file.** pyk accepts six
-rule attributes and hard-errors on `preserves-definedness`, so any rule whose LHS contains a
-partial symbol (`/Int`, `%Int`, `modInt`) cannot go through the fast loop at all.
+**CORRECTION — `--lemmas` DOES accept `preserves-definedness`.** This file previously said it
+hard-errors on that attribute, and that every rule over a partial symbol (`/Int`, `%Int`,
+`modInt`) was therefore untestable without a rebuild. **That was wrong, and it was propagated
+to every agent in this project.** Tested directly: a rule with `( A *Int B ) /Int B` on the
+LHS carrying `[simplification, preserves-definedness]` loads through `Foundry.load_lemmas`
+with the attribute intact, and proves with it. There is no `NEEDS-REBUILD` category. Test your
+division lemmas in the fast loop like any other.
 
-**Marking such a rule `NEEDS-REBUILD` is not enough — it must be COMMENTED OUT.** The check in
-`pyk/konvert/_kast_to_kore.py:335-350` has a fallback arm that *raises*, and it fires at
-`add-module` time, i.e. after the run has already started. One unusable attribute anywhere in
-your scratch file therefore takes down every rule in it, late and with a confusing error. Keep
-the rule text, comment it out, mark it `NEEDS-REBUILD`, and report it — the coordinator tests
-it centrally through a rebuild.
+**What IS true is worse, and was the real trap all along: a bad rule poisons the WHOLE file,
+late.** Any syntax or attribute error anywhere in a scratch file rejects every rule in it, at
+`add-module` time after the run has started. Two observed forms:
 
-`mul512-high-zero` sat dead in `lemmas.k` for the mirror-image reason: it was *missing*
-`preserves-definedness`, so the Booster discarded it before matching.
+- `concrete(M, N)` naming a variable that occurs only in the `requires` →
+  `ValueError: Variable in AttKey(name='concrete') not present in rule: N`
+- an attribute key outside the accepted set (`pyk/konvert/_kast_to_kore.py:335-350`)
+
+**And the failure presents as a refutation.** `kontrol prove` reports the rejection as
+`❌ PROOF FAILED ❌` *per test*, while the summary line reads `Finished 2/2 completed.
+0 passed. 0 failed.` An agent nearly recorded two refutations that never happened. **Always
+read the output above the banner.** A malformed lemma file and a genuinely failing proof look
+identical at the summary.
 
 **Check for shadowing before concluding a rule is too weak.** A general rule and a specific
 rule that share a top symbol and a priority are resolved by definition order, and **source
