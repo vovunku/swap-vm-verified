@@ -133,4 +133,63 @@ module SWAPVM-LEMMAS
        andBool A <Int B
       [simplification, preserves-definedness]
 
+// ---------------------------------------------------------------------------
+// Section 4: bounded multiplication overflow (128 x 64)
+// ---------------------------------------------------------------------------
+//
+// SwapVM specs commonly bound amounts to 128 bits (`vm.assume(X < 2**128)`) while rates
+// are uint64, so every product `X * rate` is bounded by 2^192. Solidity 0.8 emits an
+// overflow check (`X * Y < pow256`) for each multiplication, and without a rule that
+// matches the *bounded* form, the SMT solver re-derives `2^128 * 2^64 = 2^192 < 2^256`
+// for every node — the dominant cost on the MinRate proofs.
+//
+// The general `mul-no-overflow` rule in section 1 requires `X <= maxUInt256 / Y`, which
+// does NOT match the bounded form `X < pow128` / `Y < pow64` without an extra chain of
+// division/monotonicity reasoning. This specialised pair closes that gap directly.
+//
+// Soundness: for non-negative X < 2^128 and Y < 2^64, X * Y < 2^128 * 2^64 = 2^192 < 2^256.
+
+    rule [mul-no-overflow-128x64]:
+      X *Int Y <Int pow256 => true
+      requires 0 <=Int X
+       andBool 0 <=Int Y
+       andBool X <Int pow128
+       andBool Y <Int pow64
+      [simplification, preserves-definedness]
+
+    rule [mul-no-overflow-128x64-comm]:
+      Y *Int X <Int pow256 => true
+      requires 0 <=Int X
+       andBool 0 <=Int Y
+       andBool X <Int pow128
+       andBool Y <Int pow64
+      [simplification, preserves-definedness]
+
+// ---------------------------------------------------------------------------
+// Section 5: ceiling division bounds
+// ---------------------------------------------------------------------------
+//
+// OpenZeppelin's `Math.ceilDiv(a, b)` compiles (for a > 0, b > 0) to `(a - 1) / b + 1`.
+// SwapVM uses it on the exact-out leg of `_adjustMinRate1D`: the smallest input that
+// satisfies the floor. The "adjusted rate satisfies the floor" property needs the
+// *upper* bound `ceil(A/B) * B >= A`, the mirror image of `div-mul-le`.
+//
+// Soundness: ceilDiv(A, B) * B >= A for A > 0, B > 0.
+//   ceilDiv(A, B) = floor((A-1)/B) + 1, so
+//   ceilDiv(A,B) * B = floor((A-1)/B)*B + B.
+//   Let Q = floor((A-1)/B). By definition of floor, Q*B <= A-1 < (Q+1)*B.
+//   Then (Q+1)*B = Q*B + B > A-1, so (Q+1)*B >= A (integers).  ∎
+
+    rule [ceil-div-mul-ge]:
+      (((A -Int 1) /Int B) +Int 1) *Int B >=Int A => true
+      requires 0 <Int A
+       andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+    rule [ceil-div-mul-ge-comm]:
+      B *Int (((A -Int 1) /Int B) +Int 1) >=Int A => true
+      requires 0 <Int A
+       andBool 0 <Int B
+      [simplification, preserves-definedness]
+
 endmodule
