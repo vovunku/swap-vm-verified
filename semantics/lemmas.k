@@ -26,6 +26,15 @@ module SWAPVM-BYTES-LEMMAS
     requires 0 <=Int I andBool I <Int lengthBytes(B1)
     [simplification]
 
+  // Indexing inside the RIGHT operand shifts down by the left's length. The mirror of the
+  // rule above, and just as necessary: in a program built from several chunks, the opcode and
+  // args-length bytes of any instruction after the first fall in a right operand. Its absence
+  // stalled the pricing claim at pc 22 -- it could not read the args-length byte of the second
+  // instruction.
+  rule (B1 +Bytes B2) [ I ] => B2 [ I -Int lengthBytes(B1) ]
+    requires lengthBytes(B1) <=Int I
+    [simplification]
+
   // A slice wholly inside the left operand ignores the right.
   rule substrBytes(B1 +Bytes _, S, E) => substrBytes(B1, S, E)
     requires 0 <=Int S andBool S <=Int E andBool E <=Int lengthBytes(B1)
@@ -35,6 +44,16 @@ module SWAPVM-BYTES-LEMMAS
   rule substrBytes(B1 +Bytes B2, S, E)
     => substrBytes(B2, S -Int lengthBytes(B1), E -Int lengthBytes(B1))
     requires lengthBytes(B1) <=Int S andBool S <=Int E
+    [simplification]
+
+  // A slice STRADDLING the concatenation point splits at the boundary. Needed as soon as a
+  // program is built from more than two chunks: decoding an instruction's arguments slices
+  // across whatever Int2Bytes pieces the claim used to describe them. Without this the prover
+  // stalls at the first such instruction -- observed at pc 22 of the pricing claim, which had
+  // decoded the gate and could not slice the balances.
+  rule substrBytes(B1 +Bytes B2, S, E)
+    => substrBytes(B1, S, lengthBytes(B1)) +Bytes substrBytes(B2, 0, E -Int lengthBytes(B1))
+    requires 0 <=Int S andBool S <Int lengthBytes(B1) andBool lengthBytes(B1) <Int E
     [simplification]
 
   // A slice covering the whole of a value is that value.

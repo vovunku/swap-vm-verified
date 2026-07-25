@@ -113,6 +113,13 @@ program built by concatenation cannot be decoded at all: the prover cannot reduc
 | slice within left / within right | `ADMITTED` | side conditions make them total |
 | full-width slice is identity | `ADMITTED` | requires `E == lengthBytes(B)` |
 | `Bytes2Int ∘ Int2Bytes` round-trip | `ADMITTED` | requires `V < 2^(8N)`; the bound is what makes it exact rather than truncating |
+| index into **right** operand | `ADMITTED` | added in Phase 2; without it the opcode and args-length bytes of any instruction after the first cannot be read |
+| slice **straddling** the concatenation point | `ADMITTED` | added in Phase 2; splits at the boundary |
+
+The two Phase 2 additions were each found by a stall, not written speculatively. The pricing
+claim stopped at `pc 22` — it had decoded the gate and could not read the second instruction's
+args-length byte, because that byte falls in the *right* operand of a concatenation and only a
+left-index rule existed.
 
 ## Decode loop
 
@@ -138,6 +145,29 @@ A theorem inherits the **weakest** state among the instructions it touches.
 | Theorem | Depends on | Effective state |
 |---|---|---|
 | `permissioned-swap-gate` | `0x23`, decode loop, bytes lemmas | `ADMITTED` |
+| `pricing-exact-in-is-the-floor` (T1) | `0x23`, `0x90`, `0x53`, decode loop, bytes lemmas | `ADMITTED` |
+
+**T1 PROVED** (`kprove` returns `#Top`) — `semantics/proofs/pricing-spec.k`. Runs the whole
+three-instruction program with `amountIn` and both maker reserves **symbolic**, and pins the
+quote to exactly the floor of the maker's rate:
+
+    amountOut * balanceIn <= amountIn * balanceOut          (maker safety)
+    (amountOut + 1) * balanceIn > amountIn * balanceOut     (taker safety)
+
+Both bounds are required: the first alone is satisfied by returning 0, the second alone by
+returning something huge. Together they determine `amountOut` uniquely.
+
+This is the first theorem here about the **money** rather than about access control, and it
+proves the rounding decision `LimitSwap.sol:49` documents as intentional — the sub-wei
+remainder goes to the maker on every fill.
+
+Negative control `pricing-negative-control.k` — the same claim with the maker-safety
+inequality reversed — **fails as required**. It reaches the arithmetic, unlike the Phase 1
+control it replaced.
+
+**Caveat that must travel with T1:** overflow is unmodelled. `amountIn * balanceOut` is checked
+arithmetic in Solidity and reverts `Panic(0x11)`; K's `Int` is unbounded and computes. The
+honest reading is *"given the products do not overflow"*.
 
 **PROVED** (`kprove` returns `#Top`) — `semantics/proofs/gate-spec.k`. For any program
 beginning `0x23 0x14 G`, with `TAIL` symbolic, a taker holding zero `G` ends
