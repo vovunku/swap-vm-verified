@@ -240,3 +240,88 @@ Beyond the current `lemmas.k`:
   boundary, or prove them separately against OZ `Math.sqrt`, which is its own project.
 - **Symbolic-square rules** — `X ≤ Y ⇒ X² ≤ Y²`, and a no-overflow rule for `X < 2^128`.
   `PeggedSwapMath.sol:66` and `:103` are symbolic squares, exactly where Z3 stalls.
+
+---
+
+## Update: findings from the spec-writing pass
+
+Recorded after specs were written for `PeggedSwap`, `XYCConcentrate` and
+`PiecewiseLinearScale`. These refine or add to the analysis above.
+
+### A transcription harness is a trust boundary — close the diff proofs or the results are hollow
+
+`XYCConcentrateHarness` reaches the tractable properties by promoting
+`virtualBalanceIn`/`virtualBalanceOut` to scalar parameters, which keeps `_computeL` — five
+`Math.mulDiv` calls and a `Math.sqrt` — off the execution path. That is what makes those
+properties provable today.
+
+But the pricing legs in that harness are a **hand transcription** of
+`XYCConcentrate.sol:143-159`, not the instruction itself. Every property proven against
+them is therefore a theorem about the transcription until the two `test_diff_*` properties
+close, which assert that `full(...)` and `exactInLeg(virtualReserves(...))` agree
+register-for-register.
+
+**Treat closing the diff proofs as the completion criterion for XYCConcentrate, not as a
+nice-to-have.** They are gated on the same `mul512` lemma as the rest of Tier B.
+
+The harness author verified the split two ways rather than asserting it: structurally (no
+call, no `using`, no function pointer can reach `_computeL` from the legs) and by gas
+measurement — the legs' *maximum* cost, 1,327, sits below `full`'s *minimum* of 1,862, and
+`_computeL` alone cannot fit in that gap. Worth repeating that technique for any future
+transcription harness.
+
+### The non-termination bug has two distinct causes
+
+The analysis above records that `args.length <= 9` underflows `max` inside `unchecked`.
+That is true only for `args.length <= 4`. For `5 <= args.length <= 9` there is **no
+underflow** — `args.length / 5 == 1` so `max` is cleanly `0` — and the loop still cannot
+terminate, because `num` is pre-incremented and `++num == 0` is as unreachable as
+`++num == 2**256-1`.
+
+A fix that only guards the subtraction closes the first region and leaves the second wide
+open. **Ten**, not thirteen, is the smallest terminating `args.length`.
+
+### Two more unguarded paths
+
+- **`XYCConcentrate` exact-out on a zero-liquidity pool panics.** When the reconstructed
+  output offset is zero (`vOut == balanceOut`) and the taker requests at least the whole
+  balance, `Math.ceilDiv` divides by zero. OZ validates the divisor *before* short-circuiting
+  on a zero numerator, so even a zero-amount request panics. Liveness rather than safety —
+  but it is the exact boundary at which the exact-out leg stops being total, so a
+  reimplementation returning `0` there would be a behavioural change, not a cleanup.
+- **`Math.ceilDiv(0, 0)` panicking rather than returning zero** is the general form of the
+  above, and is worth remembering wherever `ceilDiv` appears with a derived divisor.
+
+### One property that holds and was not previously recorded
+
+`XYCConcentrate`'s partial fill **never charges more than the taker offered**
+(`swap.amountIn <= amountIn` on the exact-in leg, unconditionally). This protects the taker,
+and `:148` overwrites a taker-supplied register, so its safety was not obvious. Now
+specified.
+
+### The next lemma is `ceilDiv`, and two instructions need it independently
+
+Both the `PiecewiseLinearScale` and `XYCConcentrate` spec passes converged on the same
+missing lemma without coordination:
+
+- `ceilDiv(a, b) * b >= a`
+- `a > 0  ==>  (ceilDiv(a, b) - 1) * b < a`   (minimality — the interesting half)
+- monotonicity in `a`
+
+It blocks `unscaleValue`'s round trip and `partialFillNeverChargesMoreThanOffered`, and
+`PeggedSwap` has five `ceilDiv` sites that will want it too. Scope it as shared work.
+
+As always: dump the stuck node with `kontrol show --node` and write the rule against the
+term KEVM actually produces. OZ's `ceilDiv` compiles to
+`SafeCast.toUint(a > 0) * ((a - 1) / b + 1)`, so the term will not look like the textbook
+form.
+
+### Anti-vacuity is part of writing a spec
+
+Two of the three spec passes mutation-tested their own properties — deliberately breaking
+the implementation, or tightening a bound, to confirm the assertions actually fail. One
+also probed that every `try` body is reached, so a `catch` is not silently swallowing the
+whole domain, and that the values flowing through are non-degenerate rather than `0 == 0`.
+
+A fuzz-green spec that cannot fail is worse than no spec, because it reads as evidence.
+Do this.
