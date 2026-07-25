@@ -24,12 +24,23 @@ and six more accumulated within an hour. Reap before trusting any timing.
 document. Two agents never hold the same file. This is what makes the work parallel-safe;
 `lemmas.k`, `kontrol.toml` and `foundry.toml` are coordinator-only for the same reason.
 
-> **The coordinator has broken this rule.** Two agents were dispatched onto
-> `PiecewiseLinearScaleSpec` simultaneously; each discovered the other only after both had
-> been proving into the same directories, and roughly 20 minutes on each side went to
-> detecting and working around it. Before dispatching, check the live agent list against the
-> file. A second agent on a file is worse than no agent — they race the same proof store and
-> one will kill the other's run.
+> **The coordinator has broken this rule three times** — `PiecewiseLinearScale`, `PowerSpec`,
+> and `XYCConcentrate`. Each time, both agents discovered the collision only after they had
+> been proving into the same directories for a while, and roughly 20 minutes per side went to
+> detecting and working around it. A second agent on a file is worse than no agent: they race
+> the same proof store and one will kill the other's run.
+>
+> Intent is not the failure mode here — *tracking* is. The dispatcher believes it knows which
+> agents are live and is wrong, usually because an agent from an earlier subsession is still
+> running. So the check must be mechanical, and it must look at the machine rather than at
+> memory. **Before dispatching onto a spec, run this and confirm the spec name is absent:**
+>
+>     docker exec kontrol ps -eo pid,ppid,etime,args --no-headers \
+>       | grep -E 'kontrol prove|\.sh$' | grep -v grep
+>
+> This catches the case a live-agent list cannot: a detached `nohup` chain whose agent session
+> has already ended, which keeps proving for hours with no agent attached to it. The
+> `XYCConcentrate` collision was exactly that shape.
 
 **Every agent writes lemmas, into its OWN file.** Proving is not the only deliverable; a
 lemma is worth more than a proof, because it transfers. Each agent owns
