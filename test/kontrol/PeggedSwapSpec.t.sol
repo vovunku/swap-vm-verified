@@ -61,6 +61,9 @@ import { PeggedSwapHarness } from "./harnesses/PeggedSwapHarness.sol";
 ///        `ONE = 1e27`; clean at `<= 2e26`. `test_knownUnderflow_exactOutAtLargeReserves`
 ///        pins the recorded witness. This is why no property here claims the instruction is
 ///        total, and why every success-path property is stated through `try`/`catch`.
+///        `test_knownOverflow_exactInAtSmallNormaliser` pins a *second*, distinct panic not
+///        recorded in FINDINGS.md: an overflow at `:167`, driven by the unbounded ratio
+///        `amountIn / x0_init` rather than by the absolute size of the normalisers.
 ///
 ///      SCOPE. `Math.sqrt` runs four times per path, each with seven data-dependent
 ///      branches for the MSB estimate and six unrolled Newton steps over symbolic operands.
@@ -126,7 +129,13 @@ contract PeggedSwapSpec is Test {
 
     /// @dev Exactly `PeggedSwapArgsBuilder.build`, inlined so the spec does not depend on
     ///      the builder being correct.
-    function _args(uint256 x0, uint256 y0, uint256 linearWidth, uint256 rateLt, uint256 rateGt)
+    function _args(
+        uint256 x0,
+        uint256 y0,
+        uint256 linearWidth,
+        uint256 rateLt,
+        uint256 rateGt
+    )
         internal
         pure
         returns (bytes memory)
@@ -172,7 +181,9 @@ contract PeggedSwapSpec is Test {
     }
 
     function _safeRate(uint256 v) internal pure returns (uint256) {
-        if (v == 0) return 1;
+        if (v == 0) {
+            return 1;
+        }
         return v > SAFE_RATE_MAX ? SAFE_RATE_MAX : v;
     }
 
@@ -189,7 +200,9 @@ contract PeggedSwapSpec is Test {
     ///      `keccak256`, and under Kontrol `keccak` is an uninterpreted function, so such a
     ///      comparison would rest on hash injectivity rather than on the bytes themselves.
     function _selectorOf(bytes memory err) internal pure returns (bytes4 s) {
-        if (err.length < 4) return bytes4(0);
+        if (err.length < 4) {
+            return bytes4(0);
+        }
         assembly ("memory-safe") {
             s := and(mload(add(err, 0x20)), 0xffffffff00000000000000000000000000000000000000000000000000000000)
         }
@@ -197,7 +210,9 @@ contract PeggedSwapSpec is Test {
 
     /// @dev The `i`-th 32-byte argument word of returned revert data, or 0 if absent.
     function _errorArg(bytes memory err, uint256 i) internal pure returns (uint256 w) {
-        if (err.length < 4 + 32 * (i + 1)) return 0;
+        if (err.length < 4 + 32 * (i + 1)) {
+            return 0;
+        }
         assembly ("memory-safe") {
             w := mload(add(err, add(0x24, mul(0x20, i))))
         }
@@ -208,10 +223,7 @@ contract PeggedSwapSpec is Test {
     ///        - the call reverted   => it reverted with this selector iff the condition held.
     ///      The second clause is what makes this two-sided. A guard that reverted
     ///      unconditionally would satisfy a `vm.expectRevert`-shaped test and fail here.
-    function _assertGuard(bool shouldFire, bool ok, bytes memory err, bytes4 sel, string memory message)
-        internal
-        pure
-    {
+    function _assertGuard(bool shouldFire, bool ok, bytes memory err, bytes4 sel, string memory message) internal pure {
         if (ok) {
             assertFalse(shouldFire, message);
         } else {
@@ -230,10 +242,12 @@ contract PeggedSwapSpec is Test {
         address tokenIn,
         address tokenOut,
         bytes memory args
-    ) internal view returns (bool ok, bytes memory err, SwapRegisters memory regs) {
-        try harness.exactIn(balanceIn, balanceOut, amountIn, tokenIn, tokenOut, args) returns (
-            SwapRegisters memory r
-        ) {
+    )
+        internal
+        view
+        returns (bool ok, bytes memory err, SwapRegisters memory regs)
+    {
+        try harness.exactIn(balanceIn, balanceOut, amountIn, tokenIn, tokenOut, args) returns (SwapRegisters memory r) {
             return (true, "", r);
         } catch (bytes memory e) {
             return (false, e, regs);
@@ -247,7 +261,11 @@ contract PeggedSwapSpec is Test {
         address tokenIn,
         address tokenOut,
         bytes memory args
-    ) internal view returns (bool ok, bytes memory err, SwapRegisters memory regs) {
+    )
+        internal
+        view
+        returns (bool ok, bytes memory err, SwapRegisters memory regs)
+    {
         try harness.exactOut(balanceIn, balanceOut, amountOut, tokenIn, tokenOut, args) returns (
             SwapRegisters memory r
         ) {
@@ -274,7 +292,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountIn,
         bytes calldata data
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, data);
 
         bool shouldFire = data.length < 160;
@@ -299,7 +320,10 @@ contract PeggedSwapSpec is Test {
         uint256 rateGtSeed,
         uint256 balanceIn,
         uint256 amountIn
-    ) public view {
+    )
+        public
+        view
+    {
         uint256 x0 = zeroX ? 0 : _nonZero(x0Seed);
         uint256 y0 = zeroY ? 0 : _nonZero(y0Seed);
         bytes memory args = _args(x0, y0, _validWidth(widthSeed), _nonZero(rateLtSeed), _nonZero(rateGtSeed));
@@ -307,7 +331,9 @@ contract PeggedSwapSpec is Test {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, 1, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         bool shouldFire = x0 == 0 || y0 == 0;
-        _assertGuard(shouldFire, ok, err, SEL_INIT_BALANCES, "initial-balances guard must fire exactly on a zero normaliser");
+        _assertGuard(
+            shouldFire, ok, err, SEL_INIT_BALANCES, "initial-balances guard must fire exactly on a zero normaliser"
+        );
 
         if (!ok && shouldFire) {
             assertEq(_errorArg(err, 0), x0, "guard must report x0");
@@ -326,7 +352,10 @@ contract PeggedSwapSpec is Test {
         uint256 rateGtSeed,
         uint256 balanceIn,
         uint256 amountIn
-    ) public view {
+    )
+        public
+        view
+    {
         bytes memory args =
             _args(_nonZero(x0Seed), _nonZero(y0Seed), linearWidth, _nonZero(rateLtSeed), _nonZero(rateGtSeed));
 
@@ -365,7 +394,10 @@ contract PeggedSwapSpec is Test {
         uint256 widthSeed,
         uint256 balanceIn,
         uint256 amountIn
-    ) public view {
+    )
+        public
+        view
+    {
         uint256 rateLt = zeroLt ? 0 : _nonZero(rateLtSeed);
         uint256 rateGt = zeroGt ? 0 : _nonZero(rateGtSeed);
         bytes memory args = _args(_nonZero(x0Seed), _nonZero(y0Seed), _validWidth(widthSeed), rateLt, rateGt);
@@ -400,7 +432,10 @@ contract PeggedSwapSpec is Test {
         uint256 rateLtSeed,
         uint256 rateGtSeed,
         uint256 amountIn
-    ) public view {
+    )
+        public
+        view
+    {
         bytes memory args = _args(
             _nonZero(x0Seed), _nonZero(y0Seed), _validWidth(widthSeed), _nonZero(rateLtSeed), _nonZero(rateGtSeed)
         );
@@ -424,7 +459,10 @@ contract PeggedSwapSpec is Test {
         uint256 widthSeed,
         uint256 rateLtSeed,
         uint256 rateGtSeed
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(balanceIn != 0 || balanceOut != 0);
 
         bytes memory args = _args(
@@ -450,17 +488,22 @@ contract PeggedSwapSpec is Test {
         uint256 x0Seed,
         uint256 y0Seed,
         uint256 widthSeed
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountOut != 0);
 
-        bytes memory args =
-            _args(_safeInit(x0Seed), _safeInit(y0Seed), _validWidth(widthSeed), 1, 1);
+        bytes memory args = _args(_safeInit(x0Seed), _safeInit(y0Seed), _validWidth(widthSeed), 1, 1);
 
         SwapRegisters memory regs;
         bool ok = true;
         bytes memory err;
-        try harness.run(true, 0, _nonZero(_safeBalance(balanceOutSeed)), 0, amountOut, 0, TOKEN_LO, TOKEN_HI, args)
-        returns (SwapRegisters memory r) {
+        try harness.run(
+            true, 0, _nonZero(_safeBalance(balanceOutSeed)), 0, amountOut, 0, TOKEN_LO, TOKEN_HI, args
+        ) returns (
+            SwapRegisters memory r
+        ) {
             regs = r;
         } catch (bytes memory e) {
             ok = false;
@@ -478,18 +521,24 @@ contract PeggedSwapSpec is Test {
         uint256 x0Seed,
         uint256 y0Seed,
         uint256 widthSeed
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountOut != 0);
 
-        bytes memory args =
-            _args(_safeInit(x0Seed), _safeInit(y0Seed), _validWidth(widthSeed), 1, 1);
+        bytes memory args = _args(_safeInit(x0Seed), _safeInit(y0Seed), _validWidth(widthSeed), 1, 1);
 
         bool ok = true;
         bytes memory err;
-        try harness.run(true, _nonZero(_safeBalance(balanceInSeed)), 0, 0, amountOut, 0, TOKEN_LO, TOKEN_HI, args)
-        returns (SwapRegisters memory) {
-            // reached the end without reverting
-        } catch (bytes memory e) {
+        try harness.run(
+            true, _nonZero(_safeBalance(balanceInSeed)), 0, 0, amountOut, 0, TOKEN_LO, TOKEN_HI, args
+        ) returns (
+            SwapRegisters memory
+        ) {
+        // reached the end without reverting
+        }
+        catch (bytes memory e) {
             ok = false;
             err = e;
         }
@@ -519,11 +568,17 @@ contract PeggedSwapSpec is Test {
         uint256 amountOut,
         uint256 amountNetPulled,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountOut != 0);
 
-        try harness.run(true, balanceIn, balanceOut, amountIn, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args)
-        returns (SwapRegisters memory) {
+        try harness.run(
+            true, balanceIn, balanceOut, amountIn, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args
+        ) returns (
+            SwapRegisters memory
+        ) {
             assertTrue(false, "exact-in must never price with amountOut already set");
         } catch { }
     }
@@ -544,7 +599,10 @@ contract PeggedSwapSpec is Test {
         uint256 widthSeed,
         uint256 rateLtSeed,
         uint256 rateGtSeed
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountOut != 0);
 
         bytes memory args = _args(
@@ -563,7 +621,9 @@ contract PeggedSwapSpec is Test {
             TOKEN_LO,
             TOKEN_HI,
             args
-        ) returns (SwapRegisters memory) {
+        ) returns (
+            SwapRegisters memory
+        ) {
             ok = true;
         } catch (bytes memory e) {
             ok = false;
@@ -581,7 +641,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountIn,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
@@ -597,11 +660,17 @@ contract PeggedSwapSpec is Test {
         uint256 amountOut,
         uint256 amountNetPulled,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountIn != 0);
 
-        try harness.run(false, balanceIn, balanceOut, amountIn, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args)
-        returns (SwapRegisters memory) {
+        try harness.run(
+            false, balanceIn, balanceOut, amountIn, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args
+        ) returns (
+            SwapRegisters memory
+        ) {
             assertTrue(false, "exact-out must never price with amountIn already set");
         } catch { }
     }
@@ -620,7 +689,10 @@ contract PeggedSwapSpec is Test {
         uint256 widthSeed,
         uint256 rateLtSeed,
         uint256 rateGtSeed
-    ) public view {
+    )
+        public
+        view
+    {
         vm.assume(amountIn != 0);
 
         bytes memory args = _args(
@@ -639,7 +711,9 @@ contract PeggedSwapSpec is Test {
             TOKEN_LO,
             TOKEN_HI,
             args
-        ) returns (SwapRegisters memory) {
+        ) returns (
+            SwapRegisters memory
+        ) {
             ok = true;
         } catch (bytes memory e) {
             ok = false;
@@ -656,7 +730,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountOut,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
@@ -678,9 +755,11 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountOut,
         bytes calldata args
-    ) public view {
-        (bool ok,, SwapRegisters memory regs) =
-            _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
+    )
+        public
+        view
+    {
+        (bool ok,, SwapRegisters memory regs) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (ok) {
             uint256 expected = amountOut > balanceOut ? balanceOut : amountOut;
@@ -697,9 +776,11 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountOut,
         bytes calldata args
-    ) public view {
-        (bool ok,, SwapRegisters memory regs) =
-            _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
+    )
+        public
+        view
+    {
+        (bool ok,, SwapRegisters memory regs) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (ok && regs.amountOut != 0) {
             assertGe(regs.amountIn, 1, "a non-zero exact-out fill must cost at least one wei in");
@@ -721,7 +802,10 @@ contract PeggedSwapSpec is Test {
         uint256 amountIn,
         uint256 amountNetPulled,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         try harness.run(true, balanceIn, balanceOut, amountIn, 0, amountNetPulled, TOKEN_LO, TOKEN_HI, args) returns (
             SwapRegisters memory regs
         ) {
@@ -738,7 +822,10 @@ contract PeggedSwapSpec is Test {
         uint256 amountOut,
         uint256 amountNetPulled,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         try harness.run(false, balanceIn, balanceOut, 0, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args) returns (
             SwapRegisters memory regs
         ) {
@@ -759,9 +846,11 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountIn,
         bytes calldata args
-    ) public view {
-        (bool ok,, SwapRegisters memory regs) =
-            _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
+    )
+        public
+        view
+    {
+        (bool ok,, SwapRegisters memory regs) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (ok) {
             assertTrue(
@@ -791,7 +880,10 @@ contract PeggedSwapSpec is Test {
         uint256 linearWidth,
         uint256 rateLt,
         uint256 rateGt
-    ) public view {
+    )
+        public
+        view
+    {
         (bool okLo, bytes memory errLo, SwapRegisters memory lo) = _tryExactIn(
             balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, _args(x0, y0, linearWidth, rateLt, rateGt)
         );
@@ -817,7 +909,10 @@ contract PeggedSwapSpec is Test {
         uint256 linearWidth,
         uint256 rateLt,
         uint256 rateGt
-    ) public view {
+    )
+        public
+        view
+    {
         (bool okLo, bytes memory errLo, SwapRegisters memory lo) = _tryExactOut(
             balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, _args(x0, y0, linearWidth, rateLt, rateGt)
         );
@@ -854,7 +949,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountIn,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
@@ -868,7 +966,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountOut,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
@@ -901,7 +1002,10 @@ contract PeggedSwapSpec is Test {
         uint256 balanceOut,
         uint256 amountOut,
         bytes calldata args
-    ) public view {
+    )
+        public
+        view
+    {
         (bool ok, bytes memory err,) = _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
 
         if (!ok) {
@@ -910,7 +1014,7 @@ contract PeggedSwapSpec is Test {
     }
 
     // =======================================================================
-    // 8. Known-reachable underflow (FINDINGS.md, apparent bug 1)
+    // 8. Known-reachable arithmetic panics (FINDINGS.md, apparent bug 1, and one more)
     //
     //    Pinned rather than asserted away. `PeggedSwap.sol:215` computes
     //    `ceilDiv(x1 - x0, rateIn)` with a *checked* subtraction, and the round trip
@@ -931,6 +1035,160 @@ contract PeggedSwapSpec is Test {
         assertFalse(ok, "recorded witness must still revert");
         assertTrue(_selectorOf(err) == SEL_PANIC, "recorded witness must revert with a Panic, not a custom error");
         assertEq(_errorArg(err, 0), 0x11, "recorded witness must be an arithmetic underflow, Panic(0x11)");
+    }
+
+    /// @notice A second, distinct reachable `Panic(0x11)` — an *overflow*, at `:167`.
+    ///
+    /// @dev NOT in FINDINGS.md, which records only the two `ceilDiv` *underflows* at `:179`
+    ///      and `:215`. This one is on the exact-in leg and fires much earlier and at far
+    ///      smaller inputs.
+    ///
+    ///      `PeggedSwap.sol:167` evaluates `Math.sqrt(u1 * ONE)` where
+    ///      `u1 = (x0 + amountIn*rateIn) * ONE / x0_init` (`:163`). Nothing bounds the ratio
+    ///      `x1 / x0_init`, so `u1` is only bounded by `2^256/ONE`, and `u1 * ONE` overflows
+    ///      as soon as `u1 > ~1.16e50`. The source comment at `:162` asserts `x1 <= 1e30`
+    ///      and the one at `:166` asserts `a <= 2e27`; neither is enforced anywhere.
+    ///
+    ///      Witness: a one-wei input reserve with a matching normaliser (`x0_init == 1`), so
+    ///      the pool starts exactly at its nominal point, and a taker input of 1e24 — an
+    ///      ordinary size for an 18-decimal token. `u1` reaches 1e51 and the multiply
+    ///      overflows. Note that unlike the `:215` underflow this needs no exotic
+    ///      normaliser: it is driven by the *ratio* `amountIn/x0_init`, which is unbounded
+    ///      whenever the maker configures a small `x0`.
+    function test_knownOverflow_exactInAtSmallNormaliser() public view {
+        bytes memory args = _args(1, 1, 0, 1, 1);
+
+        (bool ok, bytes memory err,) = _tryExactIn(1, 1, 1e24, TOKEN_LO, TOKEN_HI, args);
+
+        assertFalse(ok, "recorded witness must still revert");
+        assertTrue(_selectorOf(err) == SEL_PANIC, "recorded witness must revert with a Panic, not a custom error");
+        assertEq(_errorArg(err, 0), 0x11, "recorded witness must be an arithmetic overflow, Panic(0x11)");
+    }
+
+    // =======================================================================
+    // 9. Success-path exercise at a nominal pool
+    //
+    //    Everything in sections 4-6 is stated over the full `uint256` domain through
+    //    `try`/`catch`, which is the right shape for Kontrol but leaves the *fuzzer*
+    //    almost always on the reverting branch: a `bytes` drawn at random is shorter than
+    //    160 bytes, and a five-tuple of random `uint256` fails one of the parse guards or
+    //    overflows the normalisation. Those properties are therefore close to vacuous
+    //    under `forge test` even though they are exactly right under `kontrol prove`.
+    //
+    //    The two properties below restate the same claims over a pool that is *at* its
+    //    nominal point — `x0_init == balanceIn * rateIn`, `y0_init == balanceOut * rateOut`,
+    //    so `u == v == ONE` — at magnitudes below the underflow threshold recorded in
+    //    FINDINGS.md. That is a genuine narrowing and it is the reason these are separate
+    //    tests rather than assumptions bolted onto the full-domain versions: the theorem
+    //    is the full-domain one, and this pair exists to keep the fast loop honest.
+    // =======================================================================
+
+    /// @dev Magnitudes chosen so that the whole exact-in path is provably free of the
+    ///      arithmetic panics documented in section 8. With `balance in [1e6, 1e20]`,
+    ///      `rate <= 1e6` and `amountIn <= 8 * balanceIn`:
+    ///        x0_init = balanceIn*rateIn in [1e6, 1e26];  x1 = x0 + amountIn*rateIn <= 9e26;
+    ///        u1 = x1*ONE/x0_init <= 9e47, so u1*ONE <= 9e74 < 2^256 at line 167.
+    ///      They also sit an order of magnitude below the 2e26 normaliser threshold at
+    ///      which FINDINGS.md records the first `:179`/`:215` underflow.
+    uint256 internal constant NOMINAL_BALANCE_MIN = 1e6;
+    uint256 internal constant NOMINAL_BALANCE_MAX = 1e20;
+    uint256 internal constant NOMINAL_RATE_MAX = 1e6;
+
+    function _nominalBalance(uint256 v) internal pure returns (uint256) {
+        if (v < NOMINAL_BALANCE_MIN) {
+            return NOMINAL_BALANCE_MIN;
+        }
+        return v > NOMINAL_BALANCE_MAX ? NOMINAL_BALANCE_MAX : v;
+    }
+
+    function _nominalRate(uint256 v) internal pure returns (uint256) {
+        if (v == 0) {
+            return 1;
+        }
+        return v > NOMINAL_RATE_MAX ? NOMINAL_RATE_MAX : v;
+    }
+
+    /// @notice Exact-out over a nominal pool: it prices, it clamps, it charges at least one
+    ///         wei, and it leaves the other registers alone.
+    function test_nominalPool_exactOutSuccessPath(
+        uint256 balanceInSeed,
+        uint256 balanceOutSeed,
+        uint256 amountOut,
+        uint256 amountNetPulled,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        public
+        view
+    {
+        uint256 balanceIn = _nominalBalance(balanceInSeed);
+        uint256 balanceOut = _nominalBalance(balanceOutSeed);
+        uint256 rateLt = _nominalRate(rateLtSeed);
+        uint256 rateGt = _nominalRate(rateGtSeed);
+
+        // tokenIn == TOKEN_LO < TOKEN_HI == tokenOut, so rateIn == rateLt and rateOut == rateGt.
+        bytes memory args = _args(balanceIn * rateLt, balanceOut * rateGt, _validWidth(widthSeed), rateLt, rateGt);
+
+        SwapRegisters memory regs =
+            harness.run(false, balanceIn, balanceOut, 0, amountOut, amountNetPulled, TOKEN_LO, TOKEN_HI, args);
+
+        assertEq(
+            regs.amountOut, amountOut > balanceOut ? balanceOut : amountOut, "output must be clamped to balanceOut"
+        );
+        if (regs.amountOut != 0) {
+            assertGe(regs.amountIn, 1, "a non-zero fill must cost at least one wei in");
+        }
+        assertEq(regs.balanceIn, balanceIn, "balanceIn must be untouched");
+        assertEq(regs.balanceOut, balanceOut, "balanceOut must be untouched");
+        assertEq(regs.amountNetPulled, amountNetPulled, "amountNetPulled must be untouched");
+    }
+
+    /// @notice Exact-in over a nominal pool: it prices, it never over-quotes the output
+    ///         reserve, and it leaves the other registers alone.
+    /// @dev `amountOut <= balanceOut` is the exact-in counterpart of the `:196` clamp. It
+    ///      is not stated over the full domain because the non-drain branch establishes it
+    ///      only through `y1 <= y0`, i.e. through a `Math.sqrt` value.
+    ///
+    ///      `drain` selects which of the two exact-in branches is taken. A saturating clamp
+    ///      alone would not: a `uint256` drawn at random saturates at the cap on virtually
+    ///      every sample, so one branch would get all the coverage. `8 * balanceIn` is above
+    ///      the capacity bound for every admissible `A` — `uMax = solve(C, A)` lies in
+    ///      `[2*ONE, 4*ONE]`, and `u1 = 9*ONE` at a nominal pool — so it always drains,
+    ///      while `min(seed, balanceIn)` gives `u1 <= 2*ONE` and never does.
+    function test_nominalPool_exactInSuccessPath(
+        bool drain,
+        uint256 balanceInSeed,
+        uint256 balanceOutSeed,
+        uint256 amountInSeed,
+        uint256 amountNetPulled,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        public
+        view
+    {
+        uint256 balanceIn = _nominalBalance(balanceInSeed);
+        uint256 balanceOut = _nominalBalance(balanceOutSeed);
+        uint256 rateLt = _nominalRate(rateLtSeed);
+        uint256 rateGt = _nominalRate(rateGtSeed);
+        uint256 amountIn = drain ? 8 * balanceIn : (amountInSeed > balanceIn ? balanceIn : amountInSeed);
+
+        bytes memory args = _args(balanceIn * rateLt, balanceOut * rateGt, _validWidth(widthSeed), rateLt, rateGt);
+
+        SwapRegisters memory regs =
+            harness.run(true, balanceIn, balanceOut, amountIn, 0, amountNetPulled, TOKEN_LO, TOKEN_HI, args);
+
+        assertLe(regs.amountOut, balanceOut, "exact-in must never quote more than the output reserve");
+        assertTrue(
+            regs.amountIn == amountIn || regs.amountOut == balanceOut,
+            "exact-in may only rewrite amountIn on the drain branch"
+        );
+        assertEq(regs.amountOut == balanceOut, drain, "the capacity check must pick the intended branch");
+        assertEq(regs.balanceIn, balanceIn, "balanceIn must be untouched");
+        assertEq(regs.balanceOut, balanceOut, "balanceOut must be untouched");
+        assertEq(regs.amountNetPulled, amountNetPulled, "amountNetPulled must be untouched");
     }
 
     /// @notice The same shape at a realistic pool size does not underflow.

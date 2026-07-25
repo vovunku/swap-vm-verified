@@ -42,7 +42,11 @@ contract PeggedSwapHarness is PeggedSwap {
         address tokenIn,
         address tokenOut,
         bytes calldata args
-    ) external pure returns (SwapRegisters memory) {
+    )
+        external
+        pure
+        returns (SwapRegisters memory)
+    {
         Context memory ctx;
         ctx.query.isExactIn = isExactIn;
         ctx.query.tokenIn = tokenIn;
@@ -68,7 +72,11 @@ contract PeggedSwapHarness is PeggedSwap {
         address tokenIn,
         address tokenOut,
         bytes calldata args
-    ) external pure returns (SwapRegisters memory) {
+    )
+        external
+        pure
+        returns (SwapRegisters memory)
+    {
         Context memory ctx;
         ctx.query.isExactIn = true;
         ctx.query.tokenIn = tokenIn;
@@ -91,7 +99,11 @@ contract PeggedSwapHarness is PeggedSwap {
         address tokenIn,
         address tokenOut,
         bytes calldata args
-    ) external pure returns (SwapRegisters memory) {
+    )
+        external
+        pure
+        returns (SwapRegisters memory)
+    {
         Context memory ctx;
         ctx.query.isExactIn = false;
         ctx.query.tokenIn = tokenIn;

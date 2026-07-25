@@ -418,6 +418,38 @@ contract XYCConcentrateSpec is Test {
         }
     }
 
+    /// @notice A partial fill never charges the taker more than they offered.
+    ///
+    /// @dev The other half of the clamp's economics, and the one that protects the *taker*:
+    ///      `:148` overwrites `ctx.swap.amountIn`, so without this the instruction could in
+    ///      principle cut the fill down and still bill for the full order.
+    ///
+    ///      It holds because `amountIn' = ceil(balanceOut * vIn / (vOut - balanceOut))` is
+    ///      the least input that buys `balanceOut`, and the branch was only entered because
+    ///      the taker's `amountIn` bought strictly more than that. Concretely, with
+    ///      `d = vOut - balanceOut`, the branch condition gives
+    ///      `amountIn * (d - 1) >= (balanceOut + 1) * vIn`, and
+    ///      `(balanceOut + 1) / (d - 1) > balanceOut / d`, so `amountIn` strictly exceeds
+    ///      the rational the ceiling is taken of — hence it is at least the ceiling.
+    ///
+    ///      Stated unconditionally: on the unclamped branch the register is untouched, so
+    ///      equality holds trivially and the two branches share one inequality.
+    function test_exactIn_partialFillNeverChargesMoreThanOffered(
+        uint256 balanceOut,
+        uint256 amountIn,
+        uint256 virtualBalanceIn,
+        uint256 virtualBalanceOut
+    ) public view {
+        try harness.exactInLeg(balanceOut, amountIn, 0, virtualBalanceIn, virtualBalanceOut) returns (
+            SwapRegisters memory swap,
+            bool
+        ) {
+            assertLe(swap.amountIn, amountIn, "a partial fill must never charge more than the taker offered");
+        } catch {
+            // Reverted; nothing was charged.
+        }
+    }
+
     /// @notice An exact-in swap that does not clamp leaves the input register untouched.
     /// @dev The complement of the property above, and the reason `amountIn` is an in/out
     ///      register rather than a pure input: `:148` is the only write to it on the
