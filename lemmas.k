@@ -205,6 +205,41 @@ module SWAPVM-LEMMAS
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
       [simplification]
 
+// Exact cancellation. KEVM's int-simplification has `(A *Int B) /Int A => B` but the
+// Booster discards it here for the same definedness reason as the mul512 rules -- and
+// Section 1's `mul-bound-transfer` needs an `X <= maxUInt256 /Int Y` hypothesis that the
+// try/catch spec form deliberately does not supply. Needed by `pow(B,1,p) == B`, which
+// reduces to `(P *Int B) /Int P == B`.
+// Soundness: integer division is exact when the dividend is a multiple of the divisor.
+// DERIVABLE.
+    rule [mul-div-cancel]:
+      ( A *Int B ) /Int A => B
+      requires A =/=Int 0
+      [simplification, preserves-definedness]
+
+    rule [mul-div-cancel-comm]:
+      ( B *Int A ) /Int A => B
+      requires A =/=Int 0
+      [simplification, preserves-definedness]
+
+// Low-bit extraction after an explicit bit-set or an even construction. A spec that builds
+// `exponent = e | 1` to force an odd exponent produces `1 &Int (E |Int 1)`; if that is not
+// collapsed the bit-clear arm stays live and reaches a symbolic square. Observed to take
+// `test_precisionZero_oddExponentPanicsWithDivisionByZero` from 32+ minutes with zero nodes
+// to 2m10s -- though causation was not isolated, so treat as probable rather than proven.
+// Soundness: elementary bit arithmetic. DERIVABLE, and total, so no definedness attribute.
+    rule [and1-or1]:
+      1 &Int ( X |Int 1 ) => 1
+      [simplification]
+
+    rule [and1-or1-comm]:
+      1 &Int ( 1 |Int X ) => 1
+      [simplification]
+
+    rule [and1-even]:
+      1 &Int ( 2 *Int X ) => 0
+      [simplification]
+
 // Soundness: if A < B then floor(A / B) = 0, for B > 0 and A >= 0.
     rule [div-lt-is-zero]:
       A /Int B => 0

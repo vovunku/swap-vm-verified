@@ -1627,6 +1627,26 @@ omit `requires` entirely.
 
 ---
 
+## CORRECTION (verified against a real node)
+
+Two claims in this document were too strong and were corrected by a later run:
+
+1. **`merge-nodes` does NOT require re-running with `--break-on-jumpi` and
+   `optimize-kcfg = false`.** Branch nodes at a `JUMPI` survive `optimize-kcfg = true` with
+   all break flags off, because `optimize-kcfg` merges *linear chains*, not splits. A loop-head
+   node was dumped from `PowerSpec.test_witness_decayStaysZeroAfterCollapse:0` node 26 matching
+   `is_loop` exactly, produced under the fast config. The entry cost estimated here was too
+   pessimistic — `merge-nodes` on a loop head is available today.
+
+2. **`--bmc-depth` is more useful than "it bounds the trip count, which is not the problem"
+   suggests.** BMC also terminates exploration of the *branch tree*, which is what makes the
+   `uint8`/`uint16`-exponent properties reachable. `decayStaysZero` was converging normally at
+   146 nodes with `bounded: 0` when its run was stopped.
+
+Also confirmed here: **a `kontrol prove` launched with `nohup … &` inside a tool call is
+SIGKILLed when that call returns** — the log ends in a bare `Killed`, which reads exactly like
+an OOM and is not one. Use `setsid nohup … & disown`.
+
 ## HANDOFF
 
 ### Top 5 changes, ranked by expected speedup
