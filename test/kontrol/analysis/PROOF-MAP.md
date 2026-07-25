@@ -36,39 +36,48 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 
 ---
 
-## Summary — 42 of 133 Track B properties proven
+## Summary — 54 of 133 Track B properties proven
 
-*Counting highest version only.*
+*Counting highest version only. Track B = XYCSwap, PeggedSwap, XYCConcentrate,
+PiecewiseLinearScale, Power.*
 
-| Spec | Properties | Proven | Attempted |
-|---|---|---|---|
-| PiecewiseLinearScale | 31 | **18** | 20 |
-| XYCSwap | 12 | **8** | 10 |
-| XYCConcentrate | 21 | **6** | 8 |
-| PeggedSwap | 38 | **5** | 11 |
-| Power | 31 | **5** | 5 |
-| **Track B total** | **133** | **42** | **54** |
+| Spec | Properties | Proven | Attempted | Hit rate |
+|---|---|---|---|---|
+| PiecewiseLinearScale | 31 | **24** | 27 | 89% |
+| Power | 31 | **11** | 11 | **100%** |
+| XYCSwap | 12 | **8** | 10 | 80% |
+| XYCConcentrate | 21 | **6** | 8 | 75% |
+| PeggedSwap | 38 | **5** | 11 | 45% |
+| **Track B total** | **133** | **54** | **67** | **81%** |
 
-Track A, out of scope: `LimitSwap`, `MinRate`, `BaseFeeAdjuster`.
+Track A, out of scope: `LimitSwap` (4 attempted, 0 proven), `MinRate`, `BaseFeeAdjuster`.
 
-**Hit rate on attempted properties is 42/54 — the bottleneck is throughput, not
-provability.** Where a proof has actually been given a fair run on a quiet machine it
-usually closes. Every "stuck" diagnosis in this file's history has turned out to be a
-resource problem: first 57 orphaned backend servers, then a config measured 9.4x slower,
-then 175% oversubscription from `max-frontier-parallel` multiplying across concurrent
-agents. Suspect the environment before the mathematics.
+**81% of attempted properties close.** The bottleneck is throughput, not provability —
+79 of 133 are simply unattempted. Every "stuck" diagnosis in this project's history turned
+out to be environmental rather than mathematical: 57 orphaned backend servers, a config
+measured 9.4x slower than default, then 175% oversubscription from `max-frontier-parallel`
+multiplying across concurrent agents. **Suspect the environment before the mathematics.**
 
-### Landmark results
+### Landmarks
 
-- **`PiecewiseLinearScaleSpec.test_value_unscaleThenScaleIsIdentity`** — closed by the
-  Section 5 `ceilDiv -> up/Int` normalisation, the property that lemma was written for.
-- **`PeggedSwapSpec.test_knownUnderflow_exactOutAtLargeReserves`** — the underflow bug
-  witness is now proven under Kontrol, not merely reproduced under `forge test`. That is
-  the strongest evidence level available for a bug report.
-- **`PeggedSwapSpec.test_bothBalancesZeroGuardFiresWhenBothZero`** — 128 nodes, i.e. the
-  full 2^7 `Math.sqrt` MSB cascade, closed without an abstraction.
-- **`PowerSpec`** — 5 of 5 attempted, first time in the definition.
-- **`XYCConcentrateSpec`** — 6 of 8 attempted, up from 1.
+- **`Power` is 11 of 11** — every attempted property closed, including the concrete-exponent
+  unrollings and the `uint8`-exponent BMC goals.
+- **`PiecewiseLinearScale` is 24 of 27**, the strongest spec in the project.
+- **`test_value_unscaleThenScaleIsIdentity`** closed on the Section 5 `ceilDiv -> up/Int`
+  normalisation — the property that lemma was written for.
+- **`test_knownUnderflow_exactOutAtLargeReserves`** is proven under Kontrol, not merely
+  reproduced under `forge test`. Strongest evidence tier available for the bug report.
+- **`test_bothBalancesZeroGuardFiresWhenBothZero`** closed at 128 nodes — the full 2^7
+  `Math.sqrt` MSB cascade, without any abstraction. The `isqrt` seam may matter less than
+  assumed.
+
+### Still open (17 at latest version)
+
+The three `test_seam_deadCode_*` (16-31 nodes, 1-2 pending each) are the `isqrt` seam's first
+real test. `XYCSwapSpec.test_exactIn_cannotDrainPool` and `roundsInFavourOfMaker` remain the
+long-standing pair. `XYCConcentrateSpec.test_exactIn_partialFillNeverChargesMoreThanOffered`
+needs `ceilDiv` minimality. `PiecewiseLinearScaleSpec.test_scale_rangeAnyLengthArgs` is the
+`--bmc-depth 51` goal.
 
 ## Per-spec notes
 
