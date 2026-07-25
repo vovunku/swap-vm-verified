@@ -591,4 +591,114 @@ module SWAPVM-LEMMAS
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
       [simplification]
 
+// ---------------------------------------------------------------------------
+// S9. Weighted-average and scaled-product bounds
+// ---------------------------------------------------------------------------
+// Recovered from scratch files left in the container by earlier subsessions. These were
+// derived against dumped terms while unsticking specific proofs and were never merged, so
+// the work was being redone. Every rule below carries `preserves-definedness` because its
+// LHS contains `/Int` or `>>Int` — without it the Booster discards the rule BEFORE matching
+// and it is silently dead. That is not a theoretical risk: `mul512-high-zero` in Section 6
+// sat inert in this file for exactly that reason.
+//
+// A consequence worth knowing: none of these can be tested with the `--lemmas` fast loop,
+// because pyk hard-errors on `preserves-definedness`. They are testable only through a
+// rebuild, which is why they must live here rather than in an agent's scratch file.
+
+// The convex-combination bounds. A linear interpolation between S0 and S1 lies between
+// them, so a blend can never escape the interval its endpoints span. This is
+// `PiecewiseLinearScale`'s central shape, but nothing about it is specific to that
+// instruction — any weighted average over a `D`-wide window has it.
+//
+// Soundness (lower): the numerator is at least T*M + (D-T)*M = M*D, since T >= 0,
+// D-T >= 0, S0 >= M and S1 >= M. Floor is monotonic and M*D/D is exact, so the quotient
+// is at least M. Upper is the mirror image with the inequalities reversed.
+//
+// Both operand orders appear: the compiler emits whichever the source wrote, and a rule
+// matching only one of them fires on half the goals it should.
+    rule [blend-lower]:
+      M <=Int ( ( T *Int S1 ) +Int ( ( D -Int T ) *Int S0 ) ) /Int D => true
+      requires 0 <=Int T andBool T <=Int D andBool 0 <Int D
+       andBool 0 <=Int M andBool M <=Int S0 andBool M <=Int S1
+      [simplification, preserves-definedness]
+
+    rule [blend-lower-swapped]:
+      M <=Int ( ( ( D -Int T ) *Int S0 ) +Int ( T *Int S1 ) ) /Int D => true
+      requires 0 <=Int T andBool T <=Int D andBool 0 <Int D
+       andBool 0 <=Int M andBool M <=Int S0 andBool M <=Int S1
+      [simplification, preserves-definedness]
+
+    rule [blend-upper]:
+      ( ( T *Int S1 ) +Int ( ( D -Int T ) *Int S0 ) ) /Int D <=Int M => true
+      requires 0 <=Int T andBool T <=Int D andBool 0 <Int D
+       andBool 0 <=Int S0 andBool 0 <=Int S1
+       andBool S0 <=Int M andBool S1 <=Int M
+      [simplification, preserves-definedness]
+
+    rule [blend-upper-swapped]:
+      ( ( ( D -Int T ) *Int S0 ) +Int ( T *Int S1 ) ) /Int D <=Int M => true
+      requires 0 <=Int T andBool T <=Int D andBool 0 <Int D
+       andBool 0 <=Int S0 andBool 0 <=Int S1
+       andBool S0 <=Int M andBool S1 <=Int M
+      [simplification, preserves-definedness]
+
+// Scaling by a fraction <= 1 cannot grow a value. Distinct from `div-le-self` in Section 4,
+// which needs the product already formed; this fires on the un-normalised shape.
+// Soundness: A*B <= A*C, and floor is monotonic, so (A*B)/C <= (A*C)/C = A.
+    rule [mul-div-le-self]:
+      ( A *Int B ) /Int C <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <Int C andBool B <=Int C
+      [simplification, preserves-definedness]
+
+    rule [mul-div-le-self-comm]:
+      ( B *Int A ) /Int C <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <Int C andBool B <=Int C
+      [simplification, preserves-definedness]
+
+// The same statement for a fixed-point shift, which is how the scaling is actually written
+// when the denominator is a power of two.
+    rule [mul-shiftr-le-self]:
+      ( A *Int B ) >>Int N <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <=Int N andBool B <=Int ( 2 ^Int N )
+      [simplification, preserves-definedness]
+
+    rule [mul-shiftr-le-self-comm]:
+      ( B *Int A ) >>Int N <=Int A => true
+      requires 0 <=Int A andBool 0 <=Int B andBool 0 <=Int N andBool B <=Int ( 2 ^Int N )
+      [simplification, preserves-definedness]
+
+// A constant-product quote can never drain the pool it quotes against: the output is
+// strictly less than the reserve. This is `XYCSwap.cannotDrainPool` reduced to arithmetic.
+// Soundness: A*B < B*(C+A) = A*B + B*C, because B*C > 0 when both are strictly positive.
+// The quotient is therefore below B as a rational, and B is an integer, so the floor is
+// too. The divisor C+A is positive because C is.
+    rule [mul-div-lt-factor]:
+      ( A *Int B ) /Int ( C +Int A ) <Int B => true
+      requires 0 <=Int A andBool 0 <Int B andBool 0 <Int C
+      [simplification, preserves-definedness]
+
+// The lower half of the ceiling contract. KEVM ships `upInt-lt-true` for the upper bound
+// but nothing for this direction, so rounding-in-favour-of-the-maker goals stall on it.
+// Soundness: ceil(A/B) >= A/B exactly, hence ceil(A/B)*B >= A for positive B.
+    rule [updiv-mul-ge]:
+      A <=Int ( A up/Int B ) *Int B => true
+      requires 0 <=Int A andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+// The Solidity overflow idiom `a == 0 || (a * b) / a == b`, collapsed whole rather than
+// one disjunct at a time. Soundness: when A is zero the product is zero and both sides are
+// 1; when A is positive the right disjunct IS the no-overflow test, by definition of the
+// idiom. Both equality orders appear depending on how the source wrote the comparison.
+    rule [mul-guard-or-collapse-l]:
+      bool2Word ( A ==Int 0 ) |Int bool2Word ( chop ( A *Int B ) /Int A ==Int B )
+        => bool2Word ( A *Int B <Int pow256 )
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification, preserves-definedness]
+
+    rule [mul-guard-or-collapse-r]:
+      bool2Word ( A ==Int 0 ) |Int bool2Word ( B ==Int chop ( A *Int B ) /Int A )
+        => bool2Word ( A *Int B <Int pow256 )
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification, preserves-definedness]
+
 endmodule
