@@ -96,8 +96,15 @@ written. Two real lessons replace it:
    built. My earlier claim to have "verified in the compiled source" that the rules were
    mutually exclusive was false — the compiled source showed the opposite.
 
-Two conformance cases were added that would have caught this: reversed token order with a
-pre-set output register, on both legs. The previous four-case table never varied the output
+**Independently confirmed.** Two reviewers reached the precedence diagnosis separately, and a
+mutation study verified the parenthesised version is correct across all four
+direction/orientation combinations with the priorities removed.
+
+Conformance cases were added that would have caught this: reversed token order both pricing
+and with a pre-set output register, on both legs, on **both engines**. The K side previously
+had no reversed-branch case at all, which is why a mutation study found that reintroducing D-1
+left the entire suite green. Verified by doing exactly that — removing the parentheses again
+now fails `revPrices`. The previous four-case table never varied the output
 register off zero on the reversed branch, which is the only region where the model diverged.
 
 Diagnosis that worked, after several that did not: `krun --depth N` to step to the exact
