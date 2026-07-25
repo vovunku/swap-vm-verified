@@ -108,21 +108,28 @@ symbolic 256-bit checked multiply and a symbolic division.
 This reframes the project's bottleneck. It is not that we lack clever lemmas. It is that
 symbolic products do not rewrite, and three levers act on that directly.
 
-### Decision 1 — stop working around monolithic functions; split them at the source
+### Decision 1 — reason on the function in place; fix the prover, not the source
 
-The `XYCConcentrate` harness contains a 98-line transcription for one reason: the pricing
-logic at `:143-159` sits *inside* `_xycConcentrateGrowLiquidity2D` (`:123-160`) with no
-function boundary, so there is nothing to import. The copy is not a shortcut taken instead of
-an import — it is what remains when no import exists.
+An earlier draft of this section proposed extracting `XYCConcentrate.sol:143-159` into its
+own `internal` function so the harness could import it instead of transcribing it. **That
+was the wrong call and has been dropped.**
 
-The fix is to extract `:143-159` into its own `internal` function in the production source.
-The harness then imports it like every other harness and the trust boundary disappears
-entirely: no copy, nothing to keep in sync, and no differential proof needed to close a gap
-that no longer exists. Since the function is `internal` and called once, the optimiser
-inlines it and the emitted code should be unchanged.
+Nothing prevents reasoning about the whole function as it stands — the `full` surface already
+calls `_xycConcentrateGrowLiquidity2D` unmodified. It does not close, but the reason is
+`mul512`'s `mulmod`, which is a prover limitation, not a property of the source. Restructuring
+production code to work around a prover is the wrong direction of fix: if the `mul512` lemma
+lands, the whole instruction becomes provable in place and both the transcription AND the
+proposed extraction become unnecessary.
 
-**This is the general move.** Where a monolith blocks verification, split the monolith. It is
-cheaper than a transcription, and unlike a transcription it cannot drift.
+It also carried a cost that was underweighted. This contract is deployed at
+`0x8fdd04dbf6111437b44bbca99c28882434e0958f` across twelve chains. Any source edit changes
+the metadata hash, so the emitted bytecode differs even when every instruction is identical —
+which means redeployment, for verification convenience. Not a trade worth making.
+
+**The rule: a verification difficulty is a reason to improve the prover or the spec, not to
+restructure deployed code.** The transcription stays for now as scaffolding, clearly marked
+in `HARNESS-FIDELITY.md` as a weaker claim than a real-code proof, and is deleted once
+`mul512` collapses.
 
 ### Decision 2 — fix in the spec what production already fixes
 
@@ -150,12 +157,11 @@ missing lemma, and that misdiagnosis has cost multiple sessions.
 
 ### Ranked next moves
 
-1. **Extract `_xycConcentratePrice`** and delete the transcription. Converts six copy-proofs
-   into real-code proofs.
-2. **Add `precision = 1e18` variants** to `PowerSpec`. Cheapest large win available; likely
-   closes in minutes rather than hours.
-3. **Crack `mul512`.** Unblocks `XYCConcentrate`'s liquidity half outright, and is the
-   difference between the pricing half and the whole instruction.
+1. **Crack `mul512`.** Unblocks `XYCConcentrate`'s liquidity half outright, makes the whole
+   instruction provable in place, and lets the transcription be deleted with nothing put in
+   its place. This is now the top item, having replaced the source-extraction proposal.
+2. **Add `atProductionPrecision` variants** to `PowerSpec`, fixing `precision = 1e18`.
+   Cheapest large win available; likely closes in minutes rather than hours.
 4. **`merge-nodes` with `keep_values=False`.** The spike works structurally — 48 pending
    leaves collapsed to 1, with anti-unification discovering exactly the three loop registers
    — but `keep_values=True` builds a 526,612-character pairwise disjunction and converts a

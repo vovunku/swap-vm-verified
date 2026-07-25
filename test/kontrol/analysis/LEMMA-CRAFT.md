@@ -1666,3 +1666,263 @@ harness), which also removes the nonlinearity.
 6. **`kontrol build`/`--rekompile` were not run**, per the constraint, so nothing in §5.1
    (the `isqrt` production) or §7 (a loop-invariant rewrite rule) has been compiled and
    tested. Both are read-from-source designs.
+
+---
+
+## E. Findings from the XYCConcentrate subsession (post-rebuild)
+
+Written against the definition rebuilt at `2026-07-25 01:39` (the build that landed
+`div-word-to-int`, `mul-guard-word`, `mul-div-contract`, `asword-buf29-zeros-*` and
+`chop-sub-eq-zero-*`). All rule labels below were confirmed present:
+
+```bash
+for l in div-word-to-int mul-guard-word mul-div-contract asword-buf29-zeros-lit \
+         chop-sub-eq-zero-l mul512-high-zero; do
+  printf '%-28s %s\n' $l $(grep -c "SWAPVM-LEMMAS.$l" out/kompiled/definition.kore)
+done
+# div-word-to-int 2 · mul-guard-word 4 · mul-div-contract 4
+# asword-buf29-zeros-lit 2 · chop-sub-eq-zero-l 2 · mul512-high-zero 8
+```
+
+### E1. The §3.1 analyser hides your own rules behind a top-N cutoff
+
+The script in §3.1 prints `most_common(20..30)`. On this repo the stock KEVM and
+`BYTES-SIMPLIFICATION` rules are tried thousands of times per node
+(`int-simplification.k:(300,10)` alone logged **1889** `match/failure` events on a single
+node), while a `SWAPVM-LEMMAS` rule logs **10-13**. Every one of our rules therefore falls
+off the bottom of the list, and the output looks exactly like "my rule was never a
+candidate" — which is decision-tree step 1, the wrong branch.
+
+**Always filter by label prefix instead of ranking.** This is the version to use:
+
+```python
+# swapvm.py — per-rule outcome breakdown for one lemma module
+import json,glob,collections,sys
+labels={}; rows=[]
+for fn in sorted(glob.glob(sys.argv[1]+'/*.jsonl')):
+    for line in open(fn):
+        try: d=json.loads(line)
+        except Exception: continue
+        ctx,msg=d.get('context',[]),d.get('message')
+        h=next((x[k] for x in ctx if isinstance(x,dict)
+                      for k in ('simplification','rewrite','function','equation') if k in x),None)
+        strs=[x for x in ctx if isinstance(x,str)]
+        if h and 'detail' in strs and isinstance(msg,str): labels[h]=msg
+        rows.append((h,tuple(strs),msg))
+out=collections.defaultdict(collections.Counter)
+detail=collections.defaultdict(list)
+for h,strs,msg in rows:
+    lab=labels.get(h)
+    if lab and lab.startswith(sys.argv[2]):          # e.g. 'SWAPVM'
+        out[lab][strs]+=1
+        if strs and strs[-1] in ('continue','break','abort') and isinstance(msg,str) \
+           and 'detail' not in strs:
+            detail[lab].append(str(msg)[:170])
+for lab in sorted(out):
+    print('==',lab)
+    for strs,n in out[lab].most_common(6): print(f'    {n:4d}  {"/".join(strs)}')
+    for m in list(dict.fromkeys(detail[lab]))[:2]: print(f'          MSG: {m}')
+```
+
+Read the context tuple directly rather than the bucketed verdict — `booster/simplify/detail`
+is "considered", `booster/simplify/match/failure/continue` is "LHS did not match",
+`.../match/success` is "fired". A rule that shows `detail` but no `match/*` line at all was
+discarded before matching, which is the `preserves-definedness` signature from §3.2.
+
+The `Values differ:"…" "…"` message attached to a `match/failure` is the *first* subterm pair
+that diverged, and it is the fastest way to see which literal in your LHS is wrong. On this
+run `mul-no-overflow` reported
+`Values differ:"115792089237316…" "1844674407370955…"` — `maxUInt256` against `2^64`, i.e.
+the rule was tried against a `uint64` range constraint it was never meant for.
+
+### E2. `bool2word-or` shadows `mul-guard-word` — the guard never reaches it in that shape
+
+`mul-guard-word` is keyed on Solidity's checked-multiply guard as
+
+```k
+bool2Word ( chop ( A *Int B ) /Word A ==Int B ) |Int bool2Word ( A ==Int 0 )
+```
+
+but the term recorded in a real path condition — dumped from
+`XYCConcentrateSpec.test_full_exactIn_revertsWhenAmountOutAlreadySet:1`, node 203 — is
+
+```
+( ( KV3_balanceOut *Int KV2_balanceIn ) /Word KV3_balanceOut ==Int KV2_balanceIn
+  orBool KV3_balanceOut ==Int 0 )
+```
+
+It fails to match on **two** independent counts, and each is a general trap:
+
+1. **The `|Int` is already gone.** Section 8's `bool2word-or` rewrites
+   `bool2Word(P) |Int bool2Word(Q) => bool2Word(P orBool Q)` at default priority 50 — the
+   same priority as `mul-guard-word`. It wins, the `JUMPI` then strips the `bool2Word`, and
+   what lands in the path condition is a bare `orBool`. Two of our own rules are fighting,
+   which is §3.7, but the loser here is the *newer* one.
+2. **The `chop` is absent.** Both operands are `uint64`-bounded, so KEVM discharges
+   `#rangeUInt(256, A *Int B)` and drops the `chop` before the guard is ever assembled. An
+   LHS written with `chop(A *Int B)` cannot match a narrowed-domain harness at all.
+
+Neither `mul-guard-word` nor `mul-guard-word-comm` fired anywhere in this spec. If the rule
+is wanted, it has to be restated at the `orBool` level and with the `chop` optional — **for
+the coordinator to land, it needs a rebuild**:
+
+```k
+    rule [mul-guard-orbool]:
+      ( ( A *Int B ) /Word A ==Int B orBool A ==Int 0 ) => A *Int B <Int pow256
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification]
+
+    rule [mul-guard-orbool-chop]:
+      ( chop ( A *Int B ) /Word A ==Int B orBool A ==Int 0 ) => A *Int B <Int pow256
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification]
+```
+
+Soundness: for `A == 0` the product is `0 < 2^256`. For `A > 0`, `/Word` is `/Int`; if
+`A*B < 2^256` then `chop(A*B) == A*B` and `(A*B)/A == B`; if `A*B >= 2^256` then
+`chop(A*B) < A*B` so `chop(A*B)/A < B`. The guard is therefore equivalent to the
+non-overflow condition. No partial symbol is introduced on the RHS, so no
+`preserves-definedness` is needed and **this pair is testable through `--lemmas`** — unlike
+every `/Int` rule in the file.
+
+Note the caveat before spending time on it: in the narrowed `_priceBounds` domain the guard
+is *already* trivially true (see E2.1 above — the `chop` was dropped because no overflow is
+possible), so rewriting it buys nothing there. It is only worth landing for the
+free-`uint256` goals, i.e. `test_full_cannotDrainPool`.
+
+### E3. `div-word-to-int` cannot fire on a multiply guard, by construction
+
+`div-word-to-int` requires `0 <Int B`. In the shape it was written for, `B` *is* the
+symbolic multiplicand of the guard, and the whole reason the guard carries an
+`orBool A ==Int 0` disjunct is that `A` may be zero. So at the point the `/Word` appears,
+`0 <Int A` is exactly what is **not** derivable, and the side condition is unsatisfiable at
+that node.
+
+Observed directly: after a full `kontrol simplify-node` on node 203, both `/Word` terms are
+still present, unreduced, in the output. `div-word-to-int` logged `match/failure/continue`
+and never `match/success` anywhere in the 8.9 MB log.
+
+This does not make the rule useless — it will fire wherever the divisor is separately known
+positive, which is the `PiecewiseLinearScale` case it was written for. It does mean **it can
+never discharge a Solidity multiply guard on its own**, and E2's `orBool` form is the rule
+that has to do that job.
+
+### E4. `mul512` is not the XYCConcentrate blocker any more — and may never have been, at this domain
+
+The full-instruction proof `test_full_exactIn_revertsWhenAmountOutAlreadySet:1` reached
+**207 nodes**, straight through `_computeL`'s three `Math.mulDiv` calls and the two in the
+virtual-offset block, with:
+
+* **no `modInt` in any stored node** —
+  `grep -l modInt out/proofs/<id>/kcfg/nodes/*.json` → empty, all 207 files;
+* **no 512-bit fork anywhere in the KCFG** — the chain is essentially linear;
+* a path condition containing plain `/Int 1000000000000000000` terms, i.e. the `mulDiv`
+  fast-path result `low / denominator`, exactly the textbook form Section 4 handles.
+
+So the gate described in `FINDINGS.md` ("blocked on `mul512`, not on sqrt") is **open**.
+
+What cannot be concluded from node snapshots is *why*. Two explanations fit:
+
+1. `mul512-high-zero` fires during the edge, as designed; or
+2. the `_priceBounds` narrowing (`uint64` balances, `uint56`/`uint64` price words) makes
+   every product small enough that KEVM's stock `A modInt B => A` closes `high == 0` with
+   no help from us.
+
+(2) is the more likely reading, because a `modInt` term never materialises in a *stored*
+node at all, and because `mul512-high-zero` logged no `match/success` in the one node-level
+log captured. Nodes are basic-block snapshots, so an intra-edge firing would not show;
+settling it needs `--haskell-log-dir` on a `prove` run bounded by `--max-iterations`, not on
+`simplify-node`. **Recorded as unresolved, not as a positive result.** The distinction
+matters for `test_full_cannotDrainPool`, whose price bounds are free `uint256`s: there the
+narrowing argument does not apply and `mul512-high-zero` is load-bearing or the goal is
+unreachable.
+
+### E5. The real XYCConcentrate blocker is now `Math.sqrt`, and it is a cost problem
+
+Node 203's last path constraint is the overflow guard on `beta * beta`
+(`XYCConcentrate.sol:106`). The next thing the instruction executes is `Math.sqrt(disc)`
+with `disc` fully symbolic — the 8-comparison `log2` MSB cascade plus the unrolled Newton
+steps. Nothing in `lemmas.k` addresses it, and no lemma can: the cascade is *branching*, not
+rewriting, so it is the §5 `isqrt` seam or nothing.
+
+Two corrections to the received account, both worth propagating:
+
+* The frontier nodes 203/207 were **not stuck**. That proof was killed by a 900-second
+  wall-clock budget in a previous subsession (`/home/user/xycrun/insp.log`:
+  `### BUDGET 900s`, `DONE rc=137`). A pending leaf whose path condition contains no
+  unresolved obligation is a *budget* symptom, not a lemma symptom. Check the runner's log
+  before writing a lemma.
+* Likewise every leg-level `try`/`catch` proof sits at a node whose path condition holds
+  **only ABI range constraints** — dumped from node 44 of both
+  `test_exactIn_cannotDrainPool:0` and `test_exactIn_partialFillNeverChargesMoreThanOffered:1`,
+  with `<k>` at `#execute ~> #return(128,192) ~> #pc[STATICCALL]`. The callee has not been
+  executed at all. These are pure throughput, and no lemma will move them.
+
+### E6. Reading a stalled node without paying for `kontrol show`
+
+`kontrol show` re-renders the whole KCFG and costs minutes plus a definition load. When all
+you need is "where is the frontier and what does it know", the node file is plain KAST JSON
+and can be read with no K at all:
+
+```python
+# kcell.py <proof-dir>#<node-id> …
+import json,os,sys
+os.chdir('/home/user/swap-vm-verified/out/proofs')
+def base(n):
+    for suf in ('_INT-COMMON_Int_Int_Int','_INT-COMMON_Bool_Int_Int','_BOOL_Bool_Bool_Bool'):
+        if n.endswith(suf): return n[:-len(suf)]
+    return n
+def p(t):
+    n=t.get('node')
+    if n=='KToken': return t['token']
+    if n=='KVariable': return t['name']
+    if n=='KSequence': return ' ~> '.join(p(x) for x in t['items'])
+    if n=='KApply':
+        b=base(t['label']['name']); a=t['args']; short=b.split('_')[0] or b
+        return short if not a else short+' ( '+' , '.join(p(x) for x in a)+' )'
+    return '<'+str(n)+'>'
+def find(t,name):
+    if isinstance(t,dict):
+        if t.get('node')=='KApply' and t['label']['name']==name: return t
+        for a in t.get('args',[])+t.get('items',[]):
+            r=find(a,name)
+            if r is not None: return r
+for arg in sys.argv[1:]:
+    d,node=arg.rsplit('#',1)
+    j=json.load(open(d+'/kcfg/nodes/'+node+'.json')); cfg=j['cterm']['config']
+    print('=====',d.split('.')[-1][:60],'node',node)
+    print('  k :',p(find(cfg,'<k>'))[:400])
+    for c in ('<pc>','<callDepth>','<statusCode>'): print('  '+c,p(find(cfg,c)))
+    for c in j['cterm'].get('constraints',[]): print('   *',p(c)[:600])
+```
+
+Grepping the same files answers the structural questions outright, and this is how E4 was
+established: `grep -l modInt */kcfg/nodes/*.json` for a live `mul512`,
+`grep -l 'Word__EVM-TYPES_Int_Int_Int'` for an unreduced `/Word`, `grep -l MULMOD` for the
+opcode. Symbol names in the JSON are KAST, not Kore — `_/Word__EVM-TYPES_Int_Int_Int`, not
+`Lbl'UndsSlsh'Word'Unds'`. Grepping for the Kore spelling silently returns nothing, which
+reads as a negative result and is not one.
+
+### E7. A rebuild does *not* invalidate proofs when only `lemmas.k` changed
+
+Worth stating because `PROOF-MAP.md` implies the opposite ("Kontrol mints a new proof version
+whenever the spec **or the definition** changes"). It does not:
+`Contract.Method.digest` (`kontrol/solc_to_k.py:643-646`) hashes
+`signature + ast + contract_storage_digest + contract_digest`, all of which come from the
+Foundry artifact JSON. The kompiled definition is not an input. `resolve_proof_version`
+(`kontrol/foundry.py:943-980`) reuses the latest version whenever that digest matches.
+
+Confirmed empirically across the `01:39` rebuild: all six PASSED `XYCConcentrate` proofs
+stayed at `:0`, and `setUp` stayed `PASSED` at `:3`.
+
+Two consequences:
+
+* **Rebuilding to land a lemma is cheap** — no proof is discarded, and PENDING proofs resume
+  from their cached prefix under the new definition. "Drain agents before rebuilding" is
+  still right (an in-flight prover holds the old `definition.kore` open), but the cost is the
+  in-flight run, not the store.
+* **Editing a spec is the expensive operation, and it is expensive in proportion to file
+  size.** `contract_digest` is the hash of the entire contract JSON, so adding one property
+  to `XYCConcentrateSpec` invalidates all 21. An agent told to "close as many proofs as
+  possible" in a file with existing PASSED proofs should treat the spec file as **read-only**
+  unless a property is actually wrong.

@@ -106,6 +106,21 @@ and the tests assert balances hitting zero (`test/XYCConcentrate.t.sol:220`, `:2
 Copying `assertLt(amountOut, balanceOut)` from `XYCSwapSpec.t.sol:66` across would produce a
 failing proof that looks like a tool problem. The correct form is `≤`.
 
+**This is no longer an argument — it is proven.**
+`XYCConcentrateSpec.test_exactIn_clampIsReachable_witness` is **PASSED under Kontrol** (not
+merely fuzz-green), and it pins the concrete counterexample to the strict form:
+`exactInLeg(balanceOut = 100, amountIn = 10_000, vIn = 1000, vOut = 200)` clamps, returns
+`amountOut == 100 == balanceOut`, and recomputes `amountIn == 1000`. So the `≤` in
+`test_exactIn_cannotDrainPool` / `test_exactOut_cannotDrainPool` / `test_full_cannotDrainPool`
+is a *checked* choice, and anyone who "fixes" it to `<` will be refuted by a proof rather
+than by a comment.
+
+The same witness is what makes `test_exactIn_clampedOutputIsExactlyBalanceOut` and
+`test_clampedExactIn_equalsExactOutAtFullBalance` non-vacuous — both are implications
+conditioned on `clamped`, and an implication with an unreachable hypothesis proves nothing.
+Any future edit that narrows the leg-level domain must re-check that this witness still
+closes, or those two properties silently become vacuous truths.
+
 **"Rounding always favours the maker" is false for `PeggedSwap`** **[measured]**. Checked
 against the exact curve at 120 decimal digits: `amountOut` can land 1 wei *above*
 `floor(exact)` and `amountIn` 1 wei *below* `ceil(exact)`. Two floors inside `solve`
@@ -193,21 +208,54 @@ exactly one execution path — no BMC, no loop invariant, and gas independent of
 exponent's Hamming weight. Since `DutchAuction` bounds the exponent to 16 bits by
 construction, a fixed 16-iteration variant is cheap.
 
-### `XYCConcentrate` — blocked on `mul512`, not on sqrt
+### `XYCConcentrate` — ~~blocked on `mul512`, not on sqrt~~ **SUPERSEDED: `mul512` is open, `sqrt` is the blocker**
 
-Every `Math.mulDiv` runs `mulmod` inside `Math.mul512`, six times per swap. Without a lemma
-collapsing `mul512` when the true product fits in 256 bits, KEVM cannot decide `high == 0`
-at `Math.sol:209` and every `mulDiv` forks into the 512-bit path containing a Newton modular
-inverse. That path is not realistically provable. **This lemma is the gate; nothing else
-matters until it exists.**
+> **This section was correct when written and is now wrong.** Kept for the reasoning, with
+> the correction inline. Measured against the definition rebuilt `2026-07-25 01:39`; see
+> `LEMMA-CRAFT.md` §E4-E5 for the evidence.
 
-Try `cse = true` in `kontrol.toml` first — compositional symbolic execution can summarise
-`mulDiv` and `sqrt` once and reuse across all six call sites, and may substitute for
-hand-writing the lemma.
+The original claim: every `Math.mulDiv` runs `mulmod` inside `Math.mul512`, six times per
+swap; without a lemma collapsing `mul512` when the true product fits in 256 bits, KEVM cannot
+decide `high == 0` at `Math.sol:209` and every `mulDiv` forks into the 512-bit path
+containing a Newton modular inverse. "This lemma is the gate; nothing else matters until it
+exists."
 
-Tractable today without any of that: a harness taking `virtualBalanceIn`/`virtualBalanceOut`
-as scalars and exercising only the pricing legs (`:143-159`). Those goals reduce to exactly
-the `XYCSwap` shape.
+**The gate is open.** `test_full_exactIn_revertsWhenAmountOutAlreadySet:1` executed **207
+nodes** straight through `_computeL`'s three `Math.mulDiv` calls and the two in the
+virtual-offset block, with:
+
+* **no `modInt` in any stored node** — `grep -l modInt out/proofs/<id>/kcfg/nodes/*.json`
+  returns nothing across all 207 files;
+* **no 512-bit fork anywhere in the KCFG** — the graph is essentially a chain;
+* a path condition carrying plain `/Int 1000000000000000000` terms, i.e. the `mulDiv`
+  fast-path result, which is the textbook shape the Section 4 lemmas already handle.
+
+Two candidate explanations, and the honest answer is that this run does not separate them:
+`mul512-high-zero` firing as designed (it was dead until the `preserves-definedness` fix), or
+the `_priceBounds` narrowing — `uint64` balances, `uint56`/`uint64` price words — keeping
+every product small enough that KEVM's stock `A modInt B => A` decides `high == 0` unaided.
+The second is more likely, since no `modInt` term materialises at all. **This matters for
+`test_full_cannotDrainPool` specifically**: its price bounds are free `uint256`s, so the
+narrowing argument does not apply there and `mul512-high-zero` is either load-bearing or the
+goal is out of reach. Settling it needs `--haskell-log-dir` on a `prove` run bounded by
+`--max-iterations`; `simplify-node` cannot see an intra-edge firing.
+
+**What actually blocks the full instruction now is `Math.sqrt`.** The frontier node's last
+path constraint is the overflow guard on `beta * beta` (`XYCConcentrate.sol:106`); the next
+instruction executed is `Math.sqrt(disc)` with `disc` fully symbolic. That is the same
+8-comparison `log2` MSB cascade plus unrolled Newton steps that gates `PeggedSwap` Groups
+E/F, and it is a *branching* cost, not a rewriting one — **no lemma can address it**. It is
+the §5 `isqrt` seam or nothing. XYCConcentrate and PeggedSwap are therefore blocked on one
+shared item, not two.
+
+Consequence for planning: `cse = true` was suggested here as a way to summarise `mulDiv` and
+`sqrt`. The `mulDiv` half is now moot, and `LEMMA-CRAFT.md` §B row 5 establishes that plain
+`--cse` cannot see `Math.sqrt` at all (`find_function_calls` drops library member accesses).
+Do not spend time on it.
+
+Tractable today without any of that, and unchanged: a harness taking
+`virtualBalanceIn`/`virtualBalanceOut` as scalars and exercising only the pricing legs
+(`:143-159`). Those goals reduce to exactly the `XYCSwap` shape.
 
 ### `PeggedSwap` — abstract `Math.sqrt` or do not start
 
@@ -262,7 +310,31 @@ close, which assert that `full(...)` and `exactInLeg(virtualReserves(...))` agre
 register-for-register.
 
 **Treat closing the diff proofs as the completion criterion for XYCConcentrate, not as a
-nice-to-have.** They are gated on the same `mul512` lemma as the rest of FULL-INSTRUCTION.
+nice-to-have.** ~~They are gated on the same `mul512` lemma as the rest of FULL-INSTRUCTION.~~
+
+**Correction — they are gated on the `isqrt` seam, not on `mul512`.** See the superseded
+`mul512` section above: the 512-bit path is not taken anywhere in a 207-node full-instruction
+execution. What stops `test_diff_*` is `Math.sqrt(disc)` inside `_computeL`, and the diff
+tests pay for it **twice** — once in `harness.virtualReserves(...)` and once inside
+`harness.full(...)`.
+
+Two things follow, and they point in opposite directions:
+
+* **The second cascade should be nearly free.** Both calls take the same `(bLt, bGt)` pair
+  and the same price bounds, so `disc` is the *same term*. Once the first cascade has pinned
+  `log2(disc)` in the path condition, all but one arm of the second is infeasible. The naive
+  fear of 2^8 x 2^8 paths is wrong; the cost is ~2x one cascade, not the square.
+* **But that is exactly why an abstraction seam has to preserve congruence.** The
+  `freshUInt` seam in `LEMMA-CRAFT.md` §B mints an *unrelated* symbol per call, so the two
+  `_computeL` invocations would get two unequal square roots and `test_diff_*` would fail on
+  a spurious mismatch — the harness would be refuting itself. `test_diff_*` is therefore the
+  one property in this file that **cannot** be closed by the cheapest seam, and it is the
+  concrete trigger for escalating to seam #3 (a declared `isqrt` symbol plus an interception
+  rule, which needs a rebuild).
+
+So the ordering is: seam #1 unblocks the rest of FULL-INSTRUCTION; only seam #3 unblocks the
+completion criterion. Anyone planning the `isqrt` work should size it against `test_diff_*`,
+not against `test_full_cannotDrainPool`.
 
 The harness author verified the split two ways rather than asserting it: structurally (no
 call, no `using`, no function pointer can reach `_computeL` from the legs) and by gas

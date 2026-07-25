@@ -70,6 +70,34 @@ put it in your scratch file, mark it `NEEDS-REBUILD`, and say so in the handoff.
 coordinator tests it centrally. `mul512-high-zero` sat dead in `lemmas.k` for exactly this
 reason: it was missing `preserves-definedness`, so the Booster discarded it *before matching*.
 
+**Substituting a production-fixed constant is allowed, and must be declared.** If a parameter
+is symbolic in the spec but production only ever passes one value, fixing it to that value is
+legitimate: it removes a symbolic operand from every product downstream, and the result is
+still a real theorem about the deployed system. `Power.pow`'s `precision` is the worked
+example — all three call sites (`DutchAuction.sol:85`, `:96`, `TWAPSwap.sol:152`) pass the
+literal `1e18`.
+
+This is NOT the forbidden move of narrowing a domain to buy a green checkmark. The
+difference is that a narrowed domain leaves reachable inputs unproven, while a
+production-fixed constant leaves none — but that only holds if the claim is true, so:
+
+1. **Verify it, do not assume it.** Grep every call site. One caller passing something else
+   voids the substitution.
+2. **Name the property so the restriction is visible** — `test_..._atProductionPrecision`,
+   not `test_...`.
+3. **State it in the docstring**: which parameter, which value, and the call sites that
+   justify it, by file and line.
+4. **Say it in the handoff**, so the coordinator can record it.
+
+A reader must never have to open the harness to discover that a theorem is conditional.
+
+**`forge build` is not serialized, and that is a real hazard.** `kontrol build` is
+coordinator-only, but nothing stops two agents running `FOUNDRY_PROFILE=kontrol forge build`
+into the same `out/` — and `prove.py` reads contract bytecode from those artifacts at prove
+time. Concurrent writers there can corrupt what a live proof reads. Before running a full
+`forge build`, check `pgrep -af 'forge build'`; if another is running, wait for it rather
+than racing it. A build limited to your own spec is cheaper and safer than a full one.
+
 **Builds are serialized, proofs are not.** `kontrol build` mutates the single shared K
 definition and only the coordinator runs it. Any number of agents may run `kontrol prove`
 concurrently against a stable definition, capped at `--workers 3` each.
