@@ -25,6 +25,26 @@ Specs target **individual instructions**, not the VM as a whole. This is deliber
   branch over every possible jump destination. Verifying instructions in isolation avoids
   this entirely. Verifying the run loop itself is a separate, much harder project.
 
+## Current status
+
+All 17 specs pass as Foundry fuzz tests. Under Kontrol, as of the last run:
+
+| Proof | Status |
+|---|---|
+| `XYCSwapSpec.setUp()` | PASSED |
+| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
+| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
+| `XYCSwapSpec.test_exactIn_cannotDrainPool` | pending |
+| everything else | not yet attempted |
+
+The two passing proofs confirm the harness shape works end to end: an `internal pure`
+instruction, reached through an external harness that assembles `Context` in memory, is
+provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` is the first
+property that does, and so the first real test of the lemma library.
+
+Treat "passes `forge test`" and "proven" as different claims, and do not describe an
+instruction as verified until it appears above.
+
 ## Layout
 
 ```
@@ -43,8 +63,27 @@ this is safe only for instructions that never call `ctx.runLoop()`.
 
 ## Prerequisites
 
-Kontrol's native installer (`kup`) is Nix-based and needs root. Where that is not
-available, the published Docker image is the path of least resistance:
+The repository ships a Nix flake providing Foundry and Kontrol. This is the supported path:
+
+```bash
+nix develop        # drops you into a shell with `forge` and `kontrol` on PATH
+kontrol version
+```
+
+Note that `flake.nix` currently tracks Kontrol's default branch rather than a pinned
+revision. A Kontrol upgrade changes the compiled definition and invalidates every cached
+proof, so pin `kontrol.url` to a tag once a version is settled on.
+
+<details>
+<summary>Fallbacks, if the flake is unavailable</summary>
+
+Native install (needs root, since `kup` is Nix-based):
+
+```bash
+bash <(curl https://kframework.org/install) && kup install kontrol
+```
+
+Docker, where root is not available:
 
 ```bash
 docker pull runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255
@@ -52,34 +91,123 @@ docker run -d --name kontrol -v "$PWD:/work" -w /work \
   runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255 sleep infinity
 ```
 
-Note that the image's `kontrol` entrypoint resolves only under its internal `user` account
-(uid 1010) — running as another uid fails with `ModuleNotFoundError: No module named
-'kontrol'`. Either run as that user or copy the working tree to a path it owns.
+The image's `kontrol` entrypoint resolves only under its internal `user` account (uid 1010)
+— running as another uid fails with `ModuleNotFoundError: No module named 'kontrol'`.
+Either run as that user, or copy the working tree to a path it owns.
 
-Native install, where root is available:
+</details>
+
+## Build
+
+Run once after cloning, and again whenever contracts, `lemmas.k`, or compiler settings
+change. Everything below assumes the repository root as the working directory.
 
 ```bash
-bash <(curl https://kframework.org/install) && kup install kontrol
-```
+# 1. Toolchain — Foundry and Kontrol, from the repo flake
+nix develop
 
-## Workflow
+# 2. Solidity dependencies
+yarn install
 
-```bash
-# Compile the K definition from the forge artifacts plus lemmas.k. Slow (minutes).
+# 3. Compile the K definition from the forge artifacts plus lemmas.k.
+#    Slow: several minutes, most of it solc under via_ir.
 FOUNDRY_PROFILE=kontrol kontrol build
 
-# Prove one spec. Repeat --match-test for several.
-kontrol prove --match-test 'XYCSwapSpec.test_exactIn_cannotDrainPool'
-
-kontrol list                      # proof statuses and node counts
-kontrol show    <test>            # print the proof / KCFG
-kontrol view-kcfg <test>          # interactive KCFG browser
-kontrol show --failure-information --failing <test>   # counterexample + path condition
+# 4. Confirm the lemmas actually compiled in. Expect a non-zero count.
+#    If this prints 0, see "Traps" below before trusting any proof result.
+grep -c 'mul-bound-transfer' kompiled/definition.kore
 ```
 
-Every spec also runs as an ordinary fuzz test — `forge test --match-path test/kontrol/` —
-which is the fast feedback loop while writing them. A spec that fails under the fuzzer will
-certainly fail under Kontrol; one that passes may still fail, since the fuzzer only samples.
+`kontrol build` is incremental. Re-running it after editing only a spec file is cheap;
+after editing `lemmas.k` you need `--rekompile`, and after that always re-check step 4.
+
+## Running proofs
+
+`--match-test` (short form `--mt`) takes a **regular expression** matched against the full
+test signature, so `ContractName\.` selects every property in one spec contract. The flag
+may be repeated to select several.
+
+```bash
+# Every property in one spec contract — the usual unit of work
+kontrol prove --mt 'XYCSwapSpec\.'
+
+# One specific property
+kontrol prove --mt 'XYCSwapSpec\.test_exactIn_cannotDrainPool'
+
+# Several, in one run (they are proven in parallel)
+kontrol prove --mt 'XYCSwapSpec\.test_exactIn_zeroInputYieldsZeroOutput' \
+              --mt 'XYCSwapSpec\.test_exactIn_revertsOnZeroBalanceIn'
+
+# Everything under test/kontrol — expect this to take a long time
+kontrol prove --mt '.*Spec\.'
+```
+
+Useful flags:
+
+| Flag | When |
+|---|---|
+| `--workers N` | Parallelism. Roughly one per core, but each worker is memory-hungry; 4–8 is sensible. |
+| `--no-fail-fast` | Report every result instead of stopping at the first failure. Usually what you want. |
+| `--reinit` | Discard cached progress and start over. Needed after contract changes, otherwise you prove stale code. |
+| `--bmc-depth N` | Bound an otherwise unbounded loop. Yields a result valid only up to N unrollings. |
+| `--use-gas` | Include gas in the proof. See "Reasoning about gas". |
+
+## Inspecting results
+
+```bash
+kontrol list                       # every proof: status, node count, pending nodes
+kontrol show <test>                # the proof and its KCFG
+kontrol view-kcfg <test>           # interactive KCFG browser
+kontrol show --failure-information --failing <test>   # counterexample and path condition
+```
+
+`kontrol list` is also the live progress signal — a rising node count means the proof is
+advancing, a frozen one means it is stuck. `PENDING` means unfinished, not failed.
+
+When a proof fails, `--failure-information --failing` is the command that matters: it
+prints the failing node, the path condition that reaches it, and a concrete model. The path
+condition is more useful than the model, since it describes the whole failing class rather
+than one example.
+
+## The fast loop
+
+Every spec is also an ordinary Foundry test. Use this while writing properties — it takes
+seconds instead of minutes:
+
+```bash
+forge test --match-path 'test/kontrol/*'                      # all specs
+forge test --match-path 'test/kontrol/XYCSwapSpec.t.sol'      # one spec
+forge test --match-path 'test/kontrol/*' --match-test 'roundsInFavour'
+```
+
+A property that fails the fuzzer will certainly fail under Kontrol, so fix it there first.
+The converse does not hold: passing the fuzzer only means no counterexample was sampled.
+
+## Starting a new instruction — the full loop
+
+Concretely, for an instruction `Foo` (see `WORKPLAN.md` for who takes what):
+
+```bash
+# 1. Write test/kontrol/harnesses/FooHarness.sol and test/kontrol/FooSpec.t.sol
+
+# 2. Iterate against the fuzzer until green — seconds per run
+forge test --match-path 'test/kontrol/FooSpec.t.sol'
+
+# 3. Recompile so Kontrol sees the new contracts
+FOUNDRY_PROFILE=kontrol kontrol build
+
+# 4. Prove, starting with the cheapest property to validate the harness shape
+kontrol prove --mt 'FooSpec\.test_someSimpleProperty' --workers 4
+
+# 5. Then the rest
+kontrol prove --mt 'FooSpec\.' --workers 4 --no-fail-fast
+
+# 6. On failure
+kontrol show --failure-information --failing 'FooSpec\.test_thatFailed'
+```
+
+Prove the cheapest property first. If the harness shape is wrong, you find out in a minute
+rather than after an hour on the hardest property in the file.
 
 ## Traps
 
