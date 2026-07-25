@@ -1,33 +1,75 @@
 # Proof map
 
 Single source of truth for what is proven. Maintained by the coordinator; agents read it as
-hand-in and never edit it.
+hand-in and never edit it. **Updated after every subsession.**
 
-**A property is PROVEN only when `kontrol list` reports PASSED against the current
-definition.** Passing `forge test` is a different, much weaker claim, and the two are kept
-apart deliberately — see the vacuity notes in `AGENT-PROTOCOL.md` for why a green fuzz run
-can mean nothing at all.
+**A property is PROVEN only when `kontrol list` reports PASSED for its HIGHEST version.**
+Two traps, both of which have already produced inflated counts:
 
-Legend: **P** proven · **F** failed · **S** stalled (node count) · **·** not attempted ·
-**X** excluded, with reason
+1. **Version staleness.** Kontrol mints a new proof version (`:0`, `:1`, …) whenever the spec
+   or the definition changes. A PASSED at `:0` says nothing about `:2`. Count the highest
+   version per property and nothing else.
+2. **`forge test` is not a proof.** Passing the fuzzer is a much weaker claim, and a
+   fuzz-green property can be vacuous — see `AGENT-PROTOCOL.md`.
 
----
+Regenerate with:
 
-## Summary
+```bash
+docker exec kontrol bash -c "cd /home/user/swap-vm-verified && su user -c \
+  'PATH=/home/user/.local/bin:/home/user/.foundry/bin:/usr/bin:/bin HOME=/home/user \
+   FOUNDRY_PROFILE=kontrol kontrol list'"
+```
 
-| Spec | Properties | Proven | Notes |
-|---|---|---|---|
-| XYCSwap | 8 (+new) | 3 | Being strengthened — upper bounds alone were too weak |
-| PeggedSwap | 31 | 0 | 19 need `--reinit`; 7 previously PASSED vacuously |
-| XYCConcentrate | 21 | 1 | Tier B gated on `mul512` **and** an `isqrt` abstraction |
-| PiecewiseLinearScale | 31 | 0 | Loop bounded at 50, so `--bmc-depth 51` is complete |
-| Power | — | — | **Spec not yet written** (Track B item B4, second half) |
-| **Track B total** | **91** | **4** | |
+Note the `su user -c` form. `docker exec -u user … kontrol list` returns empty output silently
+on this host, which has twice been mistaken for lost proof state.
 
-Out of scope for Track B, listed for completeness: `LimitSwap` (9), `MinRate` (29),
-`BaseFeeAdjuster` (25) — Track A, owned by the other track.
+Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted · **X** excluded
 
 ---
+
+## Summary — 11 of 91 Track B properties proven
+
+*Counting highest version only, against the definition built after the `preserves-definedness`
+fix.*
+
+| Spec | Properties | Proven | Attempted | Notes |
+|---|---|---|---|---|
+| XYCSwap | 12 | 5 | 8 | Strengthened 8→12; 4 new awaiting a rebuild |
+| PeggedSwap | 31 | 1 | 8 | 19 need `--reinit` after the immutable fix |
+| XYCConcentrate | 21 | 1 | 3 | Tier B needs `mul512` **and** an `isqrt` seam |
+| PiecewiseLinearScale | 31 | 4 | 8 | `--bmc-depth 51` gives a complete result |
+| Power | 31 | 0 | 0 | Spec written, awaiting first rebuild |
+| **Track B total** | **126** | **11** | **27** | |
+
+Track A, out of scope, listed for completeness: `LimitSwap` 9 (4 attempted, 0 proven),
+`MinRate` 29, `BaseFeeAdjuster` 25.
+
+### Proven at latest version
+
+| Property | Ver |
+|---|---|
+| `PeggedSwapSpec.test_panicSelectorIsTheAbiPanicSelector` | :0 |
+| `PiecewiseLinearScaleSpec.test_argsLength_tenBytesTerminates` | :0 |
+| `PiecewiseLinearScaleSpec.test_guard_precedesArgumentParsing` | :0 |
+| `PiecewiseLinearScaleSpec.test_guard_scaleInRevertsWhenBothAmountsSet` | :0 |
+| `PiecewiseLinearScaleSpec.test_value_maximalScaleIsTheIdentity` | :0 |
+| `XYCConcentrateSpec.test_exactIn_clampIsReachable_witness` | :0 |
+| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | :1 |
+| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceOut` | :2 |
+| `XYCSwapSpec.test_exactIn_revertsWhenAmountOutAlreadySet` | :2 |
+| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | :2 |
+| `XYCSwapSpec.test_exactOut_roundsInFavourOfMaker` | :2 |
+
+`test_exactOut_roundsInFavourOfMaker` is the first property closed by a lemma we wrote — the
+`ceilDiv → up/Int` normalisation in Section 5, and it needed nothing else.
+
+### Attempted but not yet closed
+
+`XYCSwapSpec`: `cannotDrainPool` (:4), `roundsInFavourOfMaker` (:3),
+`constantProductNeverDecreases` (:1 — **was PASSED at :0, superseded**).
+`PeggedSwapSpec`: 7 pending including both `knownUnderflow`/`knownOverflow` witnesses.
+`XYCConcentrateSpec`: `cannotDrainPool`, `partialFillNeverChargesMoreThanOffered`.
+`PiecewiseLinearScaleSpec`: `scaleNeverExpands`, both `unscale*`, `guard_scaleOut*`.
 
 ## XYCSwap — 3 / 8
 
@@ -122,14 +164,25 @@ exponents, not the closed form.
 
 ## Blockers, ranked by properties unblocked
 
-1. **`isqrt` abstraction** — gates PeggedSwap Groups E/F and all of XYCConcentrate Tier B.
-   `Math.sqrt` is inlined straight-line code, so axioms alone cannot fire: nothing introduces
-   an `isqrt` symbol. Needs a seam — a harness parameter with the characterising bounds
-   assumed, or an oracle-call interception rule. **This is the single highest-value item.**
-2. **`mul512` collapse firing in practice** — Section 6 is compiled in but unexercised. If it
-   does not fire, first thing to check is whether KEVM presents `MULMOD` as
-   `chop((X *Int Y) modInt maxUInt256)` where the rule matches a bare `modInt`.
-3. **`ceilDiv` normalisation firing in practice** — Section 5 is compiled in but unexercised.
-4. **Re-proving the 19 PeggedSwap properties** after the vacuity fix.
-5. **`_selectorOf` returning 0 on short revert data** — reintroduces the same vacuity for
+1. **`isqrt` seam** — gates PeggedSwap Groups E/F and all of XYCConcentrate Tier B. Now known
+   to need a **harness seam, not a lemma**: `Math.sqrt` is inlined, `--cse` provably cannot
+   see it (`find_function_calls` drops library member accesses), and `--lemmas` cannot declare
+   a new symbol. The route is `kevm.freshUInt` plus paired `vm.assume` bounds at the call
+   site, landing on the Section 7 symbolic-square rules already compiled in. **In progress.**
+2. **Re-proving after the `preserves-definedness` fix** — the `mul512` rules were dead until
+   this build, so every XYCConcentrate Tier B attempt so far was made without them.
+3. **The 19 PeggedSwap properties needing `--reinit`** after the immutable→accessor fix, 7 of
+   which previously reported a vacuous PASS.
+4. **`_selectorOf` returning 0 on short revert data** — reintroduces the same vacuity for
    every negative selector assertion on any path reverting with an empty payload.
+5. **Loop invariants for `Power.pow`** — the only technique that beats `2^bitlength` leaves.
+   MakerDAO's `kontrol-dss-2024/src/invariant.md` is the one public worked example.
+
+## Operational notes
+
+- **Drain agents before rebuilding.** A rebuild mints new proof versions and supersedes
+  in-flight work. This has already cost one round of agent progress.
+- **`--lemmas` cannot test division lemmas.** pyk accepts six rule attributes and hard-errors
+  on `preserves-definedness`, so the fast loop returns false negatives for every rule whose
+  LHS contains a partial symbol. Those must go through a rebuild.
+- **`--workers 3` per agent is a hard cap.** One agent at 6 drove load to 16.2 on 16 cores.
