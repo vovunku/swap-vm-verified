@@ -36,48 +36,39 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 
 ---
 
-## Summary — 14 of 126 Track B properties proven
+## Summary — 42 of 133 Track B properties proven
 
-*Counting highest version only, against the definition built after the `preserves-definedness`
-fix, the performance config change, and the `isqrt` seam.*
+*Counting highest version only.*
 
-| Spec | Properties | Proven | Notes |
+| Spec | Properties | Proven | Attempted |
 |---|---|---|---|
-| XYCSwap | 12 | 6 | 4 new properties now in the definition, unattempted |
-| PiecewiseLinearScale | 31 | 6 | `--bmc-depth 51` gives a complete result |
-| PeggedSwap | 38 | 1 | +7 seam properties; 19 need `--reinit` |
-| XYCConcentrate | 21 | 1 | FULL-INSTRUCTION gated on `mul512`, now un-dead |
-| Power | 31 | 0 | In the definition for the first time |
-| **Track B total** | **133** | **14** | |
+| PiecewiseLinearScale | 31 | **18** | 20 |
+| XYCSwap | 12 | **8** | 10 |
+| XYCConcentrate | 21 | **6** | 8 |
+| PeggedSwap | 38 | **5** | 11 |
+| Power | 31 | **5** | 5 |
+| **Track B total** | **133** | **42** | **54** |
 
-Track A, out of scope: `LimitSwap` 9, `MinRate` 29, `BaseFeeAdjuster` 25.
+Track A, out of scope: `LimitSwap`, `MinRate`, `BaseFeeAdjuster`.
 
-### Proven at latest version
+**Hit rate on attempted properties is 42/54 — the bottleneck is throughput, not
+provability.** Where a proof has actually been given a fair run on a quiet machine it
+usually closes. Every "stuck" diagnosis in this file's history has turned out to be a
+resource problem: first 57 orphaned backend servers, then a config measured 9.4x slower,
+then 175% oversubscription from `max-frontier-parallel` multiplying across concurrent
+agents. Suspect the environment before the mathematics.
 
-| Property | Ver |
-|---|---|
-| `PeggedSwapSpec.test_panicSelectorIsTheAbiPanicSelector` | :1 |
-| `PiecewiseLinearScaleSpec.test_argsLength_tenBytesTerminates` | :0 |
-| `PiecewiseLinearScaleSpec.test_guard_precedesArgumentParsing` | :0 |
-| `PiecewiseLinearScaleSpec.test_guard_scaleInRevertsWhenBothAmountsSet` | :0 |
-| `PiecewiseLinearScaleSpec.test_guard_scaleOutRevertsWhenBothAmountsSet` | :0 |
-| `PiecewiseLinearScaleSpec.test_scaleIn_zeroBalanceStaysZero` | :0 |
-| `PiecewiseLinearScaleSpec.test_value_maximalScaleIsTheIdentity` | :0 |
-| `XYCConcentrateSpec.test_exactIn_clampIsReachable_witness` | :0 |
-| `XYCSwapSpec.test_exactIn_constantProductNeverDecreases` | :2 |
-| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | :1 |
-| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceOut` | :2 |
-| `XYCSwapSpec.test_exactIn_revertsWhenAmountOutAlreadySet` | :2 |
-| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | :2 |
-| `XYCSwapSpec.test_exactOut_roundsInFavourOfMaker` | :2 |
+### Landmark results
 
-`test_exactOut_roundsInFavourOfMaker` is the first property closed by a rule we wrote — the
-`ceilDiv → up/Int` normalisation — and it needed nothing else.
-
-**A retracted regression, worth recording as a method note.** `constantProductNeverDecreases`
-was reported regressed because its `:1` sat PENDING. It had not regressed: `:1` was a stale
-intermediate and the live `:2` closed. Reading a PENDING intermediate as the current state is
-the trap; only the highest-numbered version describes the live definition.
+- **`PiecewiseLinearScaleSpec.test_value_unscaleThenScaleIsIdentity`** — closed by the
+  Section 5 `ceilDiv -> up/Int` normalisation, the property that lemma was written for.
+- **`PeggedSwapSpec.test_knownUnderflow_exactOutAtLargeReserves`** — the underflow bug
+  witness is now proven under Kontrol, not merely reproduced under `forge test`. That is
+  the strongest evidence level available for a bug report.
+- **`PeggedSwapSpec.test_bothBalancesZeroGuardFiresWhenBothZero`** — 128 nodes, i.e. the
+  full 2^7 `Math.sqrt` MSB cascade, closed without an abstraction.
+- **`PowerSpec`** — 5 of 5 attempted, first time in the definition.
+- **`XYCConcentrateSpec`** — 6 of 8 attempted, up from 1.
 
 ## Per-spec notes
 
