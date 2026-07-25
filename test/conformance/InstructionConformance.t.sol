@@ -245,6 +245,26 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap {
         this.runProgram(_program(address(gateToken)), TAKER, TOKEN_LO, TOKEN_HI, 1e18, 7, true);
     }
 
+    /// @notice Recompute guard on the REVERSED branch, exact-in.
+    /// @dev This is the case that would have caught the bad D-1 fix. Both recompute tests
+    ///      above use forward token order; the model's `==Bool` precedence bug made both
+    ///      recompute arms unreachable *only* on the reversed branch, so no test touched it
+    ///      and a "verified on a clean rebuild" table of four cases missed it entirely.
+    function test_conformance_recomputeDetectedReversedExactIn() public {
+        gateToken.setBalance(TAKER, 5);
+
+        vm.expectRevert(LimitSwap.LimitSwapRecomputeDetected.selector);
+        this.runProgram(_programWith(address(gateToken), 1000e18, 2000e18, 0x00), TAKER, TOKEN_HI, TOKEN_LO, 1e18, 7, true);
+    }
+
+    /// @notice Recompute guard on the REVERSED branch, exact-out.
+    function test_conformance_recomputeDetectedReversedExactOut() public {
+        gateToken.setBalance(TAKER, 5);
+
+        vm.expectRevert(LimitSwap.LimitSwapRecomputeDetected.selector);
+        this.runProgram(_programWith(address(gateToken), 1000e18, 2000e18, 0x00), TAKER, TOKEN_HI, TOKEN_LO, 7, 3, false);
+    }
+
     /// @notice Mirror of the above on the exact-out leg. `LimitSwap.sol:51`.
     function test_conformance_recomputeDetectedOnExactOut() public {
         gateToken.setBalance(TAKER, 5);

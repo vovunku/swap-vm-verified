@@ -257,7 +257,7 @@ already set.
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0
-     andBool #makerDirLt(ARGS) =/=Bool ( TIN <Int TOUT )
+     andBool ( #makerDirLt(ARGS) =/=Bool ( TIN <Int TOUT ) )
 ```
 
 Then the two pricing directions.
@@ -270,8 +270,7 @@ Then the two pricing directions.
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT ==Int 0
-     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
-    [priority(50)]
+     andBool ( #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT ) )
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
        <isExactIn> true </isExactIn>
@@ -279,8 +278,7 @@ Then the two pricing directions.
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT =/=Int 0
-     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
-    [priority(60)]
+     andBool ( #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT ) )
 
   rule <k> #exec ( 83 , ARGS ) => .K ... </k>
        <isExactIn> false </isExactIn>
@@ -289,8 +287,7 @@ Then the two pricing directions.
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN ==Int 0
-     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
-    [priority(50)]
+     andBool ( #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT ) )
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
        <isExactIn> false </isExactIn>
@@ -298,8 +295,7 @@ Then the two pricing directions.
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN =/=Int 0
-     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
-    [priority(60)]
+     andBool ( #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT ) )
 ```
 
 Malformed arguments on a MODELLED opcode

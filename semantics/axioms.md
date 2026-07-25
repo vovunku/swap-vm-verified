@@ -47,25 +47,58 @@ are modelled as reverting when they price. Any theorem touching `0x53` on that b
 unsound. The Phase 1 gate theorem is unaffected: it reverts at the gate and never reaches
 `0x53`.
 
-**FIXED.** Cause: rule *selection*, not matching. The pricing rule and the recompute rule for
-a given direction were both candidates for `#exec(83, _)`, and their `requires` clauses being
-mutually exclusive on paper did not determine which K selected — with equal priority the
-choice is unspecified, and it took the recompute arm. Adding `[priority(50)]` to the two
-pricing rules and `[priority(60)]` to the two recompute arms makes the intended order explicit.
+**FIXED — but my first fix was wrong, and the diagnosis recorded here was wrong too.**
 
-Verified on a clean rebuild — all four direction combinations now match Solidity:
+**The real cause is operator precedence, not rule selection.** K's `==Bool` and `=/=Bool` sit
+at the *bottom* of the `Bool` grammar, below `andBool`. So
 
-| case | direction byte | Solidity | K |
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT ==Int 0
+     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+
+compiled as **`(BIN>0 ∧ BOUT>0 ∧ AOUT==0 ∧ makerDirLt) ==Bool (tokenIn<tokenOut)`** — the whole
+conjunction compared against the direction. Confirmed by reading `swapvm-llvm/compiled.txt`.
+
+Consequence: whenever `makerDirLt` and `tokenIn<tokenOut` are **both false** — the reversed
+branch, half of all token pairs — the left side is `false`, the right side is `false`, and the
+guard is `true` **unconditionally, for every `amountOut`**. The pricing rule and the recompute
+rule were not mutually exclusive; both were permanently enabled.
+
+**My `[priority(50)]/[priority(60)]` fix only chose between two always-enabled rules**, and it
+chose wrong in the other direction: it traded a spurious *revert* for a spurious *price*. With
+priorities, a reversed-order program with `amountOut` already set **priced anyway** where
+Solidity reverts `LimitSwapRecomputeDetected`. That is strictly worse — a false revert is a
+false negative, a false price defeats the single-assignment safety guard entirely. Both
+recompute arms were effectively deleted from the model for reversed-order makers.
+
+**The correct fix is to parenthesise** — `andBool ( #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT ) )`
+— after which all six rules are genuinely disjoint and **the priorities are deleted**, because
+keeping them would mask the next overlap the same way.
+
+Verified on a clean rebuild with no priorities, all four rows correct including the two the
+priority fix had broken:
+
+| direction | `amountOut` | K | Solidity |
 |---|---|---|---|
-| `tokenIn < tokenOut` | `0x01` | `amountOut = 2e18` | `2e18` ✓ |
-| `tokenIn > tokenOut` | `0x00` | `amountOut = 0.5e18` | `0.5e18` ✓ |
-| `tokenIn < tokenOut` | `0x00` | mismatch | mismatch ✓ |
-| `tokenIn > tokenOut` | `0x01` | mismatch | mismatch ✓ |
+| reversed, dir `0x00` | 0 | prices | prices ✓ |
+| reversed, dir `0x00` | 7 | `Reverted("LimitSwapRecomputeDetected")` | reverts ✓ |
+| forward, dir `0x01` | 0 | prices | prices ✓ |
+| forward, dir `0x01` | 7 | `Reverted("LimitSwapRecomputeDetected")` | reverts ✓ |
 
-**Lesson worth keeping: overlapping rules need explicit priorities even when their side
-conditions look disjoint.** Mutual exclusion in the `requires` is not a selection order. The
-same class of mistake sat in `lemmas.k` for the whole project — four rules dead because a
-general rule shadowed them at equal priority. Second occurrence, same root cause.
+**The "lesson" previously recorded here — *"overlapping rules need explicit priorities even
+when their side conditions look disjoint"* — was FALSE and has been deleted.** K never applies
+a rule whose `requires` evaluates to `false`; priority only orders rules whose guards all hold.
+The side condition was never being ignored — it was a *different* side condition than the one
+written. Two real lessons replace it:
+
+1. **Parenthesise every `==Bool` / `=/=Bool`.** They bind looser than `andBool`, so an
+   unparenthesised comparison silently swallows the preceding conjunction.
+2. **Read the compiled guard, not the source guard.** `compiled.txt` shows what K actually
+   built. My earlier claim to have "verified in the compiled source" that the rules were
+   mutually exclusive was false — the compiled source showed the opposite.
+
+Two conformance cases were added that would have caught this: reversed token order with a
+pre-set output register, on both legs. The previous four-case table never varied the output
+register off zero on the reversed branch, which is the only region where the model diverged.
 
 Diagnosis that worked, after several that did not: `krun --depth N` to step to the exact
 configuration before the dispatch and read the cells, rather than reasoning about what should
