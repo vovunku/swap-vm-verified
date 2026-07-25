@@ -20,3 +20,6 @@ venv/
 kompiled/
 digest
 kontrol-proofs/
+
+# Kontrol scratch lemma files (agent-local, not shared)
+scratch-*.k

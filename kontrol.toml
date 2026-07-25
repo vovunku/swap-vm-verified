@@ -14,31 +14,72 @@ foundry-project-root       = '.'
 verbose                    = false
 debug                      = false
 reinit                     = false
-cse                        = false
-workers                    = 4
 failure-information        = true
 counterexample-information = true
 minimize-proofs            = false
 fail-fast                  = false
-smt-timeout                = 5000
 run-constructor            = false
 no-stack-checks            = true
+
+# 2, not 4. Several agents prove concurrently on a 16-core box and this multiplies with
+# `max-frontier-parallel` below: agents x workers x max-frontier-parallel = Haskell threads.
+# At 5 agents this was measured at load 27.8 with 73 live backend servers, ~175%
+# oversubscribed -- which presents as proofs being "stuck" when they are merely starved.
+workers                    = 2
 
 # Pin the hardfork the proof is carried out under. Must match `evm_version` in the
 # `kontrol` profile of foundry.toml, otherwise the proof verifies bytecode compiled
 # for one schedule against the cost/opcode rules of another.
 schedule                   = 'CANCUN'
 
-# Checkpointing. Kontrol persists proof state *between* nodes, so the distance between
-# nodes determines how much work a crash or timeout discards. The upstream default
-# (max-depth 25000, every break-on-* disabled) produces edges thousands of steps long:
-# a backend crash mid-edge loses everything since the last node, and the node count
-# stays frozen so the proof looks hung when it is in fact progressing.
+# ---------------------------------------------------------------------------
+# Performance. These values are measured, not guessed -- and they were REVERSED once,
+# on evidence. Read the whole block before changing them back.
+# ---------------------------------------------------------------------------
 #
-# These settings trade some per-node overhead for durable, observable progress:
-# a crash costs one small node, `kontrol list` node counts become a live progress
-# signal, and a stall can be localised to a single basic block instead of one opaque
-# multi-thousand-step edge. Raise max-depth once a proof is known to close quickly.
+# THE HISTORY, because the reversal is the important part.
+#
+# This file once set fine-grained checkpointing (`max-depth = 2000`, `break-on-basic-blocks`,
+# `break-on-calls`). A controlled A/B -- two runs per arm, interleaved, on
+# XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput -- appeared to demolish it:
+#
+#   proof execution time   785 s / 749 s  ->   87 s /  76 s     9.4x faster
+#   wall clock             944 s / 877 s  ->  168 s / 143 s     5.9x faster
+#   node ids allocated          89        ->        4
+#   proof.json                22.5 MB     ->     0.91 MB        24x smaller
+#   final KCFG and verdict    identical   ->   identical (PASSED)
+#
+# The mechanism was real: cut-point rules make the backend return after every basic block,
+# turning one `execute` RPC into ~89, each shipping a 140-250 KB configuration both ways --
+# and then `optimize-kcfg` merges those nodes back and DELETES them
+# (pyk/kcfg/kcfg.py:589-601), so we paid ~85 round trips for checkpoints that do not survive.
+#
+# THAT A/B WAS MEASURED ON ONE PROPERTY, AND IT DID NOT GENERALISE.
+#
+# `test_exactIn_zeroInputYieldsZeroOutput` has edges 1200-3300 steps long: straight, and
+# exactly the shape that pays for cut-points without benefiting from them. On a branchy body,
+# or on any goal carrying a symbolic product, the result INVERTS -- and it inverts far harder
+# than it ever won. Three independent measurements, on two different specs:
+#
+#   PeggedSwapSpec.test_seam_deadCode_noSolutionIsUnreachable_exactOut, node 39
+#       no-checkpoint:  did not expand AT ALL across two ~20-min runs plus a 1217 s run
+#       checkpointed:   expanded within three minutes, 31 -> 37 nodes
+#
+#   PowerSpec.test_unroll_exponentTwo  (ONE symbolic square, ONE symbolic mul-div --
+#                                       the smallest non-trivial goal in that file)
+#       no-checkpoint:  55 min CPU/worker, ZERO nodes, zero KCFG flushes
+#       checkpointed:   20 nodes in ~2 min, then ids 20 -> 31 over ~10 min
+#
+# So the two arms are not symmetric and must not be traded off as if they were. The cost of
+# checkpointing is a bounded slowdown -- 9.4x, on one measured shape. The cost of NOT
+# checkpointing is that a proof makes no progress at all, forever, while looking exactly like
+# a proof blocked on a missing lemma. That misdiagnosis has burned multiple sessions in this
+# project. A bounded slowdown is strictly preferable to an unbounded one that also lies to you.
+#
+# THEREFORE the checkpointing settings are now the DEFAULT, and the old no-checkpoint values
+# live in [prove.fast] below. Use [prove.fast] only for a goal already known to have long
+# straight edges and fully concrete arguments -- and if it makes no visible progress within a
+# few minutes, switch back rather than waiting.
 max-depth                  = 2000
 break-on-basic-blocks      = true
 break-on-calls             = true
@@ -46,7 +87,135 @@ break-on-jumpi             = false
 break-on-jump              = false
 break-on-storage           = false
 break-on-cheatcodes        = false
+optimize-kcfg              = false
+
+# `max-frontier-parallel` sets the server's GHCRTS=-N (kontrol/prove.py:359 ->
+# pyk/kore/rpc.py:1322). At its default of 1, every kore-rpc-booster process runs with a
+# single Haskell capability, so a lone `workers = 4` run uses at most 4 of 16 cores.
+#
+# BUT it multiplies with concurrency, and that recommendation assumed one prove run at a
+# time. With several agents proving at once the arithmetic is
+#     agents x workers x max-frontier-parallel  =  Haskell threads
+# and at 5 agents x 2 workers x 4 that is ~40 threads on 16 cores. Measured: load average
+# 27.8 with 73 live backend servers, i.e. ~175% oversubscribed, which looks exactly like
+# proofs being "stuck" when they are only starved.
+#
+# 2 is the value for a shared machine running several agents. Raise it toward 4 only when
+# a single proof has the box to itself.
+max-frontier-parallel      = 2
+
+# `log-rewrites` defaults to true, and at `maintenance-rate = 1` the resulting proof.json
+# is rewritten every iteration - 150,180 rewrite-log entries and ~1 GB of disk writes for
+# a single 4-node proof. Note the key is `log-rewrites = false`; `no-log-rewrites = true`
+# silently does nothing.
+log-rewrites               = false
+maintenance-rate           = 16
+
+# SMT retries use a *scaling* timeout, and the default retry limit is 10. A single
+# undecidable query - exactly what a symbolic DIV or a symbolic square produces - burns
+# 5s + 10s + 20s + ... before returning Unknown, after which the booster aborts the step
+# and Kore re-runs it. That is the mechanism behind "a symbolic DIV stalls forever with
+# nothing visibly hung". Upstream kontrol#716 reached the same conclusion.
+#
+# NECESSARY BUT NOT SUFFICIENT. There is a SECOND stall with the identical symptom, and
+# `smt-retry-limit = 0` does nothing for it. Measured on PowerSpec at the wall: the booster
+# ran at 100% CPU while its `z3` child accumulated ZERO seconds of CPU over 19 minutes. That
+# is not the solver looping, it is Haskell-side simplification looping. The same observation
+# was made independently on XYCSwap, where all six outstanding goals were extracted and put
+# to z3 directly and every one came back in under 60 ms.
+#
+# Diagnosis: "the proof is stuck" almost never means "the SMT solver is struggling" in this
+# project. Check `z3` child CPU before assuming it does -- if z3 is idle, no solver flag will
+# help and the answer is a simplification rule or the checkpointing profile.
+#
+# A REAL LIMITATION OF THE TRACING TOOL: `--haskell-log-dir` flushes per COMPLETED request,
+# so a step that never returns produces no log file at all. The stalls you most want to trace
+# are precisely the ones the tracer cannot see. Do not read an empty log dir as "nothing
+# happened".
+smt-timeout                = 120000
+smt-retry-limit            = 0
+
+cse                        = false
+
+# The former default: no checkpointing, one long edge per step. Measured 9.4x faster on
+# XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput and unable to make ANY progress on
+# PowerSpec.test_unroll_exponentTwo or PeggedSwapSpec node 39. See the history block above.
+#
+# Use ONLY for a goal already known to have long straight edges and concrete arguments. If it
+# shows no progress within a few minutes, it is not slow, it is stopped -- switch back.
+[prove.fast]
+foundry-project-root       = '.'
+workers                    = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 100000
+break-on-basic-blocks      = false
+break-on-calls             = false
 optimize-kcfg              = true
+log-rewrites               = false
+maintenance-rate           = 16
+smt-timeout                = 120000
+smt-retry-limit            = 0
+
+# Compositional symbolic execution. Kept as a SEPARATE profile rather than folded into the
+# default, so the first runs against it are a clean A/B rather than a confounded one.
+#
+# Why it matters here: every spec deploys a harness and calls it EXTERNALLY, so each property
+# pays ~1930 steps of ABI-encode, STATICCALL frame setup, ABI-decode and return buffer before
+# reaching any instruction arithmetic -- measured on XYCSwapSpec.test_exactIn_cannotDrainPool,
+# whose first guard branch is not reached until node 45 of 62, and whose open leaves contain
+# no arithmetic term at all. We pay that once per property, thirteen times over in XYCSwap
+# alone. CSE executes a called function once in an abstract symbolic setting and installs the
+# result as a summary rule applied at higher priority at every later call site.
+#
+# Upstream documents this as the primary optimisation for external calls; it was `false` here
+# for the whole project. It composes with `@custom:kontrol-precondition` NatSpec annotations,
+# which apply constraints DURING summary generation and so eliminate overflow branches before
+# the summary is built -- which is exactly what blocks the exactness properties.
+#
+# `--cse` and `--include-summary` are mutually exclusive (kontrol/prove.py:75).
+[prove.cse]
+foundry-project-root       = '.'
+workers                    = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+log-rewrites               = false
+maintenance-rate           = 16
+smt-timeout                = 120000
+smt-retry-limit            = 0
+cse                        = true
+
+# Profile for diagnosing a single stuck proof: same cut points as the default now uses, but
+# `workers = 2` and nothing else competing, so `kontrol show --node` can localise the stall.
+# Since the default adopted checkpointing this is close to it -- kept as a stable name for
+# briefs and docs that reference it.
+[prove.inspect]
+foundry-project-root       = '.'
+workers                    = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+smt-timeout                = 120000
+smt-retry-limit            = 0
 
 [show.default]
 foundry-project-root       = '.'

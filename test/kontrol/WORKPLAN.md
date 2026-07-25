@@ -1,18 +1,37 @@
 # Verification work plan
 
 Division of the instruction set between two people working in parallel, ordered so that
-neither blocks the other. See `README.md` for the workflow and the tier classification
-this is derived from.
+neither blocks the other.
+
+> **Status lives in `analysis/PROOF-MAP.md`**, not here. This file is the plan; that file is
+> the state. Read `analysis/AGENT-PROTOCOL.md` before dispatching anyone.
 
 **Splitting rule.** Track A takes instructions whose proofs should close with the lemma
 library as it stands — little or no non-linear arithmetic, so the work is writing good
 properties rather than fighting the prover. Track B takes the instructions that need lemma
 engineering, loop reasoning, or square roots.
 
-**File ownership.** One harness and one spec file per instruction, so the two tracks never
-touch the same file. The single shared file is `lemmas.k`; Track B owns it. If Track A
-needs a lemma, open an issue rather than editing it — a bad lemma silently invalidates
-every proof in the repo, so it is worth funnelling through one pair of hands.
+> **A/B means the track split and nothing else.** Track A is `Controls`, `MinRate`,
+> `Balances`, `LimitSwap`. Track B is `XYCSwap`, `PeggedSwap`, `XYCConcentrate`,
+> `PiecewiseLinearScale`, `Power`. `XYCConcentrate`'s internal difficulty split used to be
+> called "Tier A/B" as well, which collided with this and caused a real misunderstanding; it
+> is now **leg-level** versus **full-instruction**. Do not reintroduce "tier".
+
+**File ownership.** One harness and one spec file per agent, so tracks never touch the same
+file. The single shared file is `lemmas.k`; the coordinator owns it, along with
+`kontrol.toml` and `foundry.toml`. If you need a lemma, report it rather than editing.
+
+**What experience changed.** Three things were not in the original plan and cost real time:
+
+1. **Suspect the environment before the mathematics.** Every "stuck proof" diagnosed in this
+   project turned out to be resource-related — orphaned backend servers, a config measured
+   9.4x slower than default, oversubscription from `max-frontier-parallel` multiplying across
+   concurrent agents. The hit rate on properties given a fair run is high.
+2. **Vacuity is the real risk, not difficulty.** Constructor-set state reads as zero under
+   Kontrol, silently turning negative assertions into tautologies; and upper bounds alone are
+   satisfied by an implementation returning zero. Both were found in already-"passing" specs.
+3. **Lemmas must be written against compiled bytecode**, never the Solidity. `a - 1` arrives
+   as `chop(A +Int maxUInt256)`; `a > 0` as `bool2Word(notBool (A ==Int 0))`.
 
 ---
 
@@ -96,16 +115,29 @@ the repo. Derive the specification from the source and the whitepaper, and flag 
 
 ### B3. `XYCConcentrate`
 
-54 square-root references — the hardest instruction in the set. Do not start it before B2
-has produced a working `sqrt` lemma set.
+One `Math.sqrt` on the execution path and **no loops** — materially more tractable than the
+"54 square roots" figure suggested (that was a substring count over identifier names). The
+real blocker is `mul512`: every OZ `Math.mulDiv` runs `mulmod` inside it, six times per
+swap, and without a lemma collapsing it when the product fits in 256 bits, each `mulDiv`
+forks into a 512-bit path with a Newton modular inverse. Try `cse = true` before writing
+that lemma by hand.
 
 ### B4. `PiecewiseLinearScale` and `Power.pow`
 
-`Power.pow` is `while (exponent > 0)` — an unbounded loop with a symbolic trip count.
-Options, in increasing order of value: bound it with `--bmc-depth` and accept a bounded
-result; or prove a closed-form summary lemma for exponentiation-by-squaring and use that in
-place of executing the loop. The summary is the better outcome, since everything that
-reaches `Power.pow` inherits it.
+`PiecewiseLinearScale` is bounded: `runLoop` reads `argsLength` as a single byte, so
+`args.length ≤ 255` and the segment loop runs at most 50 times. With `args.length`
+constrained in the harness, `--bmc-depth 51` gives a **complete** result, not a bounded one.
+
+`Power.pow` terminates in `bitlength(exponent)` iterations — ≤ 16 for `DutchAuction`,
+≤ 256 for `TWAPSwap`. Calling it unbounded was wrong. Its difficulty is **path count**: the
+branch on `exponent & 1` has two continuing arms, so leaves grow as `2^bitlength`. Prove
+order properties (monotonicity, `B ≤ p ⇒ pow ≤ p`, the degenerate cases) rather than the
+closed form; with the floors present the exact identity only survives as an inequality.
+
+> **Read `analysis/FINDINGS.md` before starting B2, B3 or B4.** It records the corrections
+> above, several properties that are *false* and must not be ported from `XYCSwapSpec`
+> (notably `cannotDrainPool` for `XYCConcentrate`, and maker-favouring rounding for
+> `PeggedSwap`), four apparent bugs, and the places where code and documentation disagree.
 
 ### B5. Gas methodology
 
@@ -118,6 +150,11 @@ storage, gas per path is a constant rather than a symbolic expression, so provin
 ---
 
 ## Not scheduled
+
+> Tier assignments corrected after the semantics pass — see `analysis/FINDINGS.md`.
+> `BaseFeeAdjuster` and `SeriesEpochManager` do **not** use `Power` and have no loops;
+> `BaseFeeAdjuster` is a Tier-1 target and is a good unclaimed starting point.
+> Only `DutchAuction` and `TWAPSwap` reach `Power.pow`.
 
 **Tier 3** (`Invalidators`, `Decay`, `TWAPSwap`, `SeriesEpochManager`, `Fee`,
 `_dynamicBalancesXD`) touch storage or make external calls, and need a different harness
