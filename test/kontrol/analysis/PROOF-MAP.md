@@ -139,6 +139,42 @@ need a loop invariant rather than a larger depth.
 5. **Loop invariants for `Power.pow`** — the only technique that beats `2^bitlength` leaves.
    MakerDAO's `kontrol-dss-2024/src/invariant.md` is the one public worked example.
 
+## Preserving proofs
+
+The proof store is expensive and already persistent — 8.5 hours of CPU produced the current
+1.5 GB in `out/proofs/`, and it survives kills and resumes automatically. The problem is not
+persistence, it is **invalidation**:
+
+```
+total proof CPU:      8.5 h
+  on live versions:   6.5 h
+  on superseded:      2.0 h   (24% wasted)
+  of which setUp:     21 min across 19 versions
+```
+
+**Root cause.** `Contract.Method.digest` includes `contract_digest`, the hash of the *entire*
+contract JSON. Adding one property to a 31-property spec therefore invalidates **all 31**,
+and Kontrol mints a fresh version for each. That is why specs carry `:0` and `:1` proofs for
+properties nobody touched.
+
+**What actually reduces the waste, in order of value:**
+
+1. **Split spec files.** One contract per property group. An edit then invalidates only its
+   group instead of the whole file. This is the structural fix and the only one that scales.
+2. **Freeze a spec before starting long proofs on it.** Batch spec edits; do not add a
+   property while a 20-minute proof is running against the same contract.
+3. **Pass `--setup-version N`.** `setUp` is exempt from `contract_digest`
+   (`if not self.is_setup else {}`), so it genuinely can be reused — 21 minutes went into
+   re-proving it 19 times.
+4. **Prefer `kontrol remove-node <test> <id>` and a plain resume over `--reinit`** when adding
+   a lemma. `--reinit` discards the whole tree; pruning the stuck subtree keeps the prefix.
+5. **Drain agents before rebuilding.** A rebuild supersedes every in-flight proof.
+
+**Archiving.** `scripts/kontrol-proofs.sh {save|restore|prune}` archives the store out of the
+container, restores it, and prunes superseded versions. Note the limit: a proof is only valid
+against the definition digest it was produced under, so restore buys you machine loss and
+container rebuilds — **not** spec edits. Nothing resurrects a result whose contract changed.
+
 ## Operational notes
 
 - **Drain agents before rebuilding.** A rebuild mints new proof versions and supersedes
