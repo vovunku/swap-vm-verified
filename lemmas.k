@@ -167,4 +167,233 @@ module SWAPVM-LEMMAS
        andBool A <Int B
       [simplification, preserves-definedness]
 
+// ---------------------------------------------------------------------------
+// Section 5: ceiling division  ->  KEVM's `up/Int`
+// ---------------------------------------------------------------------------
+//
+// Every ceiling division is normalised onto KEVM's existing `up/Int` symbol rather than a
+// new one. `up/Int` is declared `[function, total, smtlib(upDivInt)]` (evm-types.md:76) and
+// all four of its defining rules carry `[concrete]` (:78-81), so on symbolic operands it
+// does not unfold and behaves as a total, SMT-visible uninterpreted function. Normalising
+// into it activates rules KEVM already ships -- notably `upInt-refl-geq`, which IS
+// `ceilDiv(a,b)*b >= a`, and `upInt-lt-true`, which gives the tight upper bound -- and gives
+// congruence between syntactically equal ceilDivs.
+//
+// TERM SHAPES BELOW WERE DERIVED FROM COMPILED BYTECODE, not from the Solidity source, by
+// compiling a probe under this repo's exact `[profile.kontrol]` settings and reading the
+// optimised Yul and disassembly. Two shapes matter and neither is the textbook form:
+//
+//   * `a - 1` is emitted as `add(a, not(0))`, so KEVM sees `chop(A +Int maxUInt256)` and
+//     NEVER a subtraction.
+//   * `SafeCast.toUint(a > 0)` is emitted as `ISZERO; ISZERO`, so KEVM sees
+//     `bool2Word(notBool (A ==Int 0))` and NEVER `bool2Word(0 <Int A)`.
+//
+// KEVM ships no rule bridging either gap, which is why this section exists. This is the
+// same class of trap as `not-word-to-sub` in Section 3, in mirror image.
+//
+// Soundness of the normalisation rules, for 0 <= A < 2^256 and B > 0: when A == 0 the guard
+// is 0, the product is 0, and `0 up/Int B == 0`; when A > 0, `chop(A + maxUInt256) == A - 1`
+// so `(A-1)/B + 1 == ceil(A/B)`. DERIVABLE -- an equational consequence of the semantics.
+//
+// One caveat to record: `up/Int` is defined via K's `/Int`, which truncates toward zero
+// rather than flooring, so it coincides with ceiling division only on non-negative
+// arguments. Every rule below carries an explicit non-negativity condition. EVM words are
+// always non-negative, so this costs nothing, but it must be stated.
+
+// solc emits `a - 1` as `add(a, not(0))`. KEVM's `chop-resolve` cannot discharge the result
+// because `#rangeUInt(256, A +Int maxUInt256)` holds only for A == 0.
+// Soundness: for 1 <= A < 2^256, (A + 2^256 - 1) mod 2^256 == A - 1. DERIVABLE.
+    rule [dec-word-to-sub]:
+      chop ( A +Int maxUInt256 ) => A -Int 1
+      requires 0 <Int A andBool A <Int pow256
+      [simplification]
+
+// The OZ `Math.ceilDiv` compiled form, at priority 40 so it is tried before stock KEVM
+// normalisations rearrange the term.
+    rule [ceildiv-oz-raw]:
+      chop ( bool2Word ( notBool ( A ==Int 0 ) )
+             *Int chop ( ( chop ( A +Int maxUInt256 ) /Int B ) +Int 1 ) )
+        => A up/Int B
+      requires #rangeUInt(256, A) andBool 0 <Int B
+      [simplification(40), preserves-definedness]
+
+    rule [ceildiv-oz-flat]:
+      chop ( bool2Word ( notBool ( A ==Int 0 ) )
+             *Int ( ( chop ( A +Int maxUInt256 ) /Int B ) +Int 1 ) )
+        => A up/Int B
+      requires #rangeUInt(256, A) andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+// When the path condition already gives A > 0, KEVM collapses the guard to 1 and removes
+// the multiplication, so the shapes above cannot match. These cover what is left.
+    rule [ceildiv-oz-guarded]:
+      chop ( ( chop ( A +Int maxUInt256 ) /Int B ) +Int 1 ) => A up/Int B
+      requires 0 <Int A andBool A <Int pow256 andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+    rule [ceildiv-oz-guarded-flat]:
+      ( ( A -Int 1 ) /Int B ) +Int 1 => A up/Int B
+      requires 0 <Int A andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+// PiecewiseLinearScale.sol:64 does NOT call Math.ceilDiv -- it hand-rolls
+// `((value << 24) + scale) / (scale + 1)`, the classic `(A + D - 1)/D`. Without this it
+// never reaches `up/Int` and none of the KEVM rules apply.
+// Soundness: ceil(A/D) == floor((A + D - 1)/D) for A >= 0, D > 0. DERIVABLE.
+    rule [manual-ceildiv-to-updiv]:
+      ( A +Int B ) /Int ( B +Int 1 ) => A up/Int ( B +Int 1 )
+      requires 0 <=Int A andBool 0 <=Int B
+      [simplification, preserves-definedness]
+
+// `Math.mulDiv(..., Rounding.Ceil)` reduces to floor + [remainder != 0] once Section 6 has
+// taken the fast path. Soundness: floor(A/D) + [A mod D != 0] == ceil(A/D). DERIVABLE.
+    rule [floor-plus-rem-to-updiv]:
+      ( A /Int D ) +Int bool2Word ( notBool ( ( A modInt D ) ==Int 0 ) ) => A up/Int D
+      requires 0 <=Int A andBool 0 <Int D
+      [simplification, preserves-definedness]
+
+// Bounds on `up/Int` that KEVM does not have. The workhorses eliminate the division
+// entirely rather than reasoning underneath it.
+// Soundness: for B > 0, ceil(A/B) <= C  <=>  A <= C*B, and dually. DERIVABLE.
+    rule [updiv-le-transfer]:
+      A up/Int B <=Int C => true
+      requires 0 <=Int A andBool 0 <Int B andBool A <=Int C *Int B
+      [simplification]
+
+    rule [updiv-gt-transfer]:
+      C <Int A up/Int B => true
+      requires 0 <=Int A andBool 0 <=Int C andBool 0 <Int B andBool C *Int B <Int A
+      [simplification]
+
+// Minimality -- ceil(A/B) is the least k with k*B >= A. DERIVABLE.
+// The companion `((A up/Int B) *Int B) <Int A +Int B` is already covered by KEVM's
+// `upInt-lt-true` with Z := A +Int B; do not restate it.
+    rule [updiv-minimal]:
+      ( ( A up/Int B ) -Int 1 ) *Int B <Int A => true
+      requires 0 <Int A andBool 0 <Int B
+      [simplification]
+
+    rule [updiv-monotonic]:
+      A1 up/Int B <=Int A2 up/Int B => true
+      requires 0 <=Int A1 andBool A1 <=Int A2 andBool 0 <Int B
+      [simplification]
+
+    rule [updiv-le-self]:
+      A up/Int B <=Int A => true
+      requires 0 <=Int A andBool 0 <Int B
+      [simplification]
+
+// KEVM's `I1 up/Int 1 => I1` is [concrete] and never fires on a symbolic numerator.
+    rule [updiv-one]:
+      A up/Int 1 => A
+      [simplification]
+
+    rule [div-le-updiv]:
+      A /Int B <=Int A up/Int B => true
+      requires 0 <=Int A andBool 0 <Int B
+      [simplification, preserves-definedness]
+
+// Floor-division transfer rules, needed to finish the round-trip goals once the shifts
+// become divisions. Soundness: for A >= 0, B > 0, floor(A/B) < C <=> A < C*B, etc.
+// DERIVABLE.
+    rule [div-lt-transfer]:
+      A /Int B <Int C => true
+      requires 0 <=Int A andBool 0 <Int B andBool A <Int C *Int B
+      [simplification, preserves-definedness]
+
+    rule [div-ge-transfer]:
+      C <=Int A /Int B => true
+      requires 0 <=Int A andBool 0 <Int B andBool C *Int B <=Int A
+      [simplification, preserves-definedness]
+
+// Pins a quotient from a two-sided window -- the shape the unscaleValue round trip needs.
+    rule [div-eq-from-window]:
+      ( A /Int B ) ==Int C => true
+      requires 0 <=Int A andBool 0 <Int B
+       andBool C *Int B <=Int A
+       andBool A <Int ( C +Int 1 ) *Int B
+      [simplification, comm, preserves-definedness]
+
+// Bridge shifts to arithmetic. Priority 60 so KEVM's `asWord-shr` (default 50) still wins
+// on byte-level goals -- do not raise it.
+    rule [shiftl-to-mul]:
+      X <<Int N => X *Int ( 2 ^Int N )
+      requires 0 <=Int X andBool 0 <=Int N
+      [simplification(60), concrete(N), preserves-definedness]
+
+    rule [shiftr-to-div]:
+      X >>Int N => X /Int ( 2 ^Int N )
+      requires 0 <=Int X andBool 0 <=Int N
+      [simplification(60), concrete(N), preserves-definedness]
+
+// ---------------------------------------------------------------------------
+// Section 6: 512-bit multiplication collapse
+// ---------------------------------------------------------------------------
+//
+// The gate for every OZ `Math.mulDiv`. mulDiv runs `Math.mul512` and branches on whether
+// the high limb is zero; if KEVM cannot decide that branch, every mulDiv forks into the
+// 512-bit path with its six-step Newton modular inverse, which is not realistically
+// provable.
+//
+// TERM SHAPE: `high == 0` never appears. mul512 computes
+//   mm := mulmod(a, b, not(0)); low := mul(a, b); _1 := lt(mm, low); _2 := sub(mm, low)
+//   high := sub(_2, _1)
+// and the Yul optimiser rewrites `high == 0` into `eq(_2, _1)` -- `high` is computed
+// separately because the slow path still needs it, and does not occur in the branch
+// condition. A lemma keyed on `HIGH ==Int 0` can never fire.
+//
+// Soundness: let P = X*Y >= 0 with P < 2^256, so chop(P) = P, and M = P mod (2^256 - 1).
+// If P <= 2^256 - 2 then M = P, so both sides are 0. If P == 2^256 - 1 then M = 0, so both
+// sides are 1. An elementary two-case argument that does NOT rely on the correctness of the
+// CRT reconstruction. DERIVABLE.
+//
+// Once this fires the fast path returns `low / denominator` = `(X *Int Y) /Int D`, the
+// textbook form the Section 4 division lemmas already handle. No mulDiv summary needed.
+
+    rule [mul512-high-zero]:
+      chop ( ( ( X *Int Y ) modInt maxUInt256 ) -Int chop ( X *Int Y ) )
+        ==Int bool2Word ( ( ( X *Int Y ) modInt maxUInt256 ) <Int chop ( X *Int Y ) )
+      => true
+      requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int pow256
+      [simplification, comm]
+
+    rule [mul512-high-zero-nochop]:
+      chop ( ( ( X *Int Y ) modInt maxUInt256 ) -Int ( X *Int Y ) )
+        ==Int bool2Word ( ( ( X *Int Y ) modInt maxUInt256 ) <Int ( X *Int Y ) )
+      => true
+      requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int pow256
+      [simplification, comm]
+
+// KEVM's `A modInt B => A` needs the STRICT bound, which a harness assumption of the usual
+// form `X <= maxUInt256 / Y` does not supply. DERIVABLE.
+    rule [mulmod-maxuint-collapse]:
+      ( X *Int Y ) modInt maxUInt256 => X *Int Y
+      requires 0 <=Int X andBool 0 <=Int Y andBool X *Int Y <Int maxUInt256
+      [simplification, preserves-definedness]
+
+// ---------------------------------------------------------------------------
+// Section 7: symbolic squares
+// ---------------------------------------------------------------------------
+//
+// DERIVABLE -- ordinary integer arithmetic, no assumption about any library function.
+// Z3 stalls on these because both operands are symbolic, and KEVM's own `*Int` transfer
+// rules are gated on `concrete(A, C)` so they never fire here.
+
+    rule [sq-monotonic]:
+      X *Int X <=Int Y *Int Y => true
+      requires 0 <=Int X andBool X <=Int Y
+      [simplification]
+
+    rule [sq-monotonic-strict]:
+      X *Int X <Int Y *Int Y => true
+      requires 0 <=Int X andBool X <Int Y
+      [simplification]
+
+// Strictly weaker than `mul-no-overflow` in Section 1, but its side condition needs no
+// division, which is what lets it fire.
+    rule [sq-no-overflow]:
+      X *Int X <Int pow256 => true
+      requires 0 <=Int X andBool X <Int pow128
+      [simplification]
+
 endmodule
