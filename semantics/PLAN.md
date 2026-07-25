@@ -7,6 +7,35 @@ that work and nothing there depends on this. They meet at exactly one seam, Phas
 
 ---
 
+## 0. The deliverable for THIS pass, and what it is worth
+
+**Goal: a demonstrated program-level theorem about a real catalogue program, with every
+assumption declared.** Not a verified VM. Not a discharged trust base.
+
+**Phase R — proving the K rules against the deployed bytecode — is OUT OF SCOPE for this
+pass.** There is not time, and pretending otherwise would produce a worse result than
+admitting it. Every instruction rule therefore starts `ADMITTED`, and every theorem says so.
+
+What the demonstrator does establish, which nothing today does:
+
+- A theorem quantified over an **infinite family of programs** — every program sharing a
+  given prefix — where the existing `test/invariants/` suite can only sample.
+- A property of **composition and ordering**, which is where 1inch say the risk lives and
+  which instruction-level verification cannot express at all.
+- A reusable machine: adding the next program is writing a claim, not rebuilding anything.
+
+What it does **not** establish, and must never be reported as:
+
+- That the deployed bytecode at `0x8fdd04dbf6111437b44bbca99c28882434e0958f` has this
+  property. That needs Phase R. Without it, the claim is *"the program has this property
+  given that each instruction behaves as its rule says"*.
+
+Both halves of that sentence go in any writeup. The failure mode this project has already
+demonstrated is reporting a weaker result as a stronger one: six properties were carried for
+weeks as real-code proofs when they were about a hand-written transcription.
+
+---
+
 ## 1. Why
 
 SwapVM executes *programs*: byte strings of `[opcode:1][argsLen:1][args]`, composed with
@@ -181,10 +210,13 @@ Theorems: termination, and that the selected branch is the better-output branch.
 flags branching as "hard to reason about and easy to misconfigure" — where scenario tests are
 weakest and proof is worth most.
 
-### Phase R — refinement (parallel, lower priority)
+### Phase R — refinement — **OUT OF SCOPE for this pass**
 
 Each K rule must denote its Solidity implementation. This is the `test/kontrol/` work
 repositioned: not "XYCSwap rounds in the maker's favour" but "this rule equals this bytecode".
+
+**Not attempted now.** Recorded here so the debt is visible and so the demonstrator's claims
+are stated at their true strength. See §0 and the trust model in §5a.
 
 **This is the only seam between the two halves of the repo, and it will rot if unmaintained.**
 Mitigation: a table in `semantics/axioms.md` mapping each rule or axiom to the Kontrol proof
@@ -193,6 +225,35 @@ discharging it, with `UNDISCHARGED` written out where nothing does. Note that `l
 `cannotDrainPool` axiom.
 
 ---
+
+## 5a. Trust model
+
+Every instruction rule is a claim about the deployed bytecode. Conformance testing is
+**evidence on concrete inputs, not proof over all inputs** — a green conformance suite means
+well-tested, still admitted. Three states, tracked per instruction in `semantics/axioms.md`:
+
+| State | Meaning |
+|---|---|
+| `ADMITTED` | Asserted. No proof, no conformance coverage. **All rules start here.** |
+| `TESTED` | Conformance exercises it on concrete programs. Evidence, not proof. |
+| `PROVEN` | A Kontrol proof discharges it against the real bytecode. Phase R only. |
+
+**Every theorem records its dependency set — the instructions it touches — and inherits the
+weakest state among them.** So the repo can mechanically produce "the permissioned-swap
+theorem holds, modulo `LimitSwap` being `TESTED`" instead of relying on someone remembering.
+A theorem's status improves automatically as its dependencies do.
+
+This is a smaller and more honest trust base than the status quo, which is worth stating
+plainly: `test/kontrol/` currently rests on **68 simplification rules** — one with real firing
+evidence, four dead for their entire life, none tracked — and yields no program-level results
+at all. Eighteen enumerable, individually dischargeable claims is a strict improvement, even
+while every one of them is admitted.
+
+**Negative control.** Keep a small set of statements known to be FALSE and assert they fail to
+prove. If a known-false statement ever closes, the rule set is inconsistent and every result
+above it is void. This is the only cheap check for the failure mode that looks like total
+success, and this project has already met its cousin twice — properties that passed because a
+constructor-set value read as zero, and upper bounds satisfied by a function returning zero.
 
 ## 6. Standing rules
 
