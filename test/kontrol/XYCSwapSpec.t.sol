@@ -30,6 +30,17 @@ contract XYCSwapSpec is Test {
 
     /// @dev Domain on which the exact-in pricing path executes without the instruction's
     ///      own guards tripping and without the product overflowing.
+    ///
+    ///      These are the weakest assumptions that make the property true, deliberately.
+    ///      Bounding the operands to 2^128 instead would also let the proofs through, but
+    ///      it would narrow the theorem rather than strengthen the proof — balances at or
+    ///      above 2^128 would simply be out of scope. Where a proof struggles here, the fix
+    ///      belongs in `lemmas.k`.
+    ///
+    ///      Note that `type(uint256).max - balanceIn` compiles to a bitwise complement:
+    ///      solc knows `maxUInt256 - x == ~x` for uint256, and KEVM renders `NOT x` as
+    ///      `x xorInt maxUInt256` (evm-types.md:179). The `not-word-to-sub` lemma
+    ///      normalises that back into subtraction so the overflow-guard lemmas can fire.
     function _assumeExactInDomain(uint256 balanceIn, uint256 balanceOut, uint256 amountIn) internal pure {
         vm.assume(balanceIn > 0);
         vm.assume(balanceOut > 0);

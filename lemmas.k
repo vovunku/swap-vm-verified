@@ -97,7 +97,41 @@ module SWAPVM-LEMMAS
       [simplification]
 
 // ---------------------------------------------------------------------------
-// Section 3: floor division bounds
+// Section 3: bitwise-complement normalisation
+// ---------------------------------------------------------------------------
+//
+// `type(uint256).max - x` does not survive compilation as a subtraction. solc recognises
+// that `maxUInt256 - x == ~x` for uint256 and emits a `NOT`, which KEVM rewrites to
+// `x xorInt maxUInt256` (evm-semantics/evm-types.md:179, `rule ~Word W => W xorInt maxUInt256`).
+//
+// The consequence is that an overflow guard written as `vm.assume(a <= type(uint256).max - b)`
+// arrives in the path condition as
+//
+//     KV_a <=Int KV_b xorInt maxUInt256
+//
+// — observed directly on a stuck node via `kontrol show --node`. The `add-no-overflow`
+// rules above are stated over `maxUInt256 -Int Y` and so never fire against it. KEVM's
+// bitwise-simplification module has rules for `0 <=Int X xorInt Y` and `X xorInt Y <Int Z`
+// but none that relates the complement back to subtraction, so the goal simply sits there.
+//
+// Normalising in this direction (rather than restating every arithmetic lemma in xor form)
+// keeps the rest of this file stated in ordinary arithmetic.
+//
+// Soundness: for a 256-bit unsigned X, flipping every bit yields maxUInt256 - X. The
+// `#rangeUInt(256, X)` guard is what makes that identity hold.
+
+    rule [not-word-to-sub]:
+      X xorInt maxUInt256 => maxUInt256 -Int X
+      requires #rangeUInt(256, X)
+      [simplification]
+
+    rule [not-word-to-sub-comm]:
+      maxUInt256 xorInt X => maxUInt256 -Int X
+      requires #rangeUInt(256, X)
+      [simplification]
+
+// ---------------------------------------------------------------------------
+// Section 4: floor division bounds
 // ---------------------------------------------------------------------------
 //
 // Used to prove the "cannot drain the maker" and rounding-direction properties.
