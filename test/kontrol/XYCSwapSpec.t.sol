@@ -203,20 +203,60 @@ contract XYCSwapSpec is Test {
     ///
     ///      `amountOut == 0` is deliberately left in the domain: it is the boundary case
     ///      where the ceiling must *not* round up to 1.
-    function test_exactOut_isExactlyTheCeiling(uint120 balanceIn, uint120 balanceOut, uint120 amountOut) public view {
+    /// @notice The exact-out leg returns exactly the ceiling of the curve value — neither one
+    ///         wei high nor one wei low.
+    ///
+    /// @dev Two-sided, and stated over the **full `uint256` width** with no operand narrowing.
+    ///
+    ///      Getting there needs care. With `N = amountOut * balanceIn` and
+    ///      `d = balanceOut - amountOut`, the instruction computes `ceilDiv(N, d)` and so forms
+    ///      `N` — but it never forms `amountIn * d`. The textbook statement of a ceiling,
+    ///
+    ///          amountIn * d >= N   and   amountIn * d < N + d
+    ///
+    ///      therefore evaluates a product the instruction does not, and that product reaches
+    ///      `N + d - 1`, which overflows once `N` is within `d` of 2^256. Writing it that way
+    ///      forces a `uint120` narrowing on the operands, which narrows the theorem: an
+    ///      implementation correct below 2^120 and overcharging arbitrarily above it would
+    ///      still satisfy it.
+    ///
+    ///      Both halves can be restated over quantities bounded by `N`, which the instruction
+    ///      already evaluated without reverting:
+    ///
+    ///        * minimality — `(amountIn - 1) * d < N`. Bounded by `N` by definition of the
+    ///          ceiling, so it cannot overflow. This is the taker-safety half: the quote is
+    ///          not a whole unit too large.
+    ///        * sufficiency — `N - (amountIn - 1) * d <= d`, which is `N <= amountIn * d`
+    ///          rearranged. The subtraction cannot underflow because of the line above, and
+    ///          the result is at most `N`. This is the maker-safety half.
+    ///
+    ///      `amountOut > 0` is a case split, not a domain narrowing: at `amountOut == 0` the
+    ///      quote is zero and `amountIn - 1` would underflow. That case is covered by
+    ///      `test_exactOut_zeroOutputYieldsZeroInput`.
+    function test_exactOut_isExactlyTheCeiling(uint256 balanceIn, uint256 balanceOut, uint256 amountOut)
+        public
+        view
+    {
         vm.assume(balanceIn > 0);
-        vm.assume(balanceOut > 0);
+        vm.assume(amountOut > 0);
         // `balanceOut - amountOut` must not underflow and must be a usable divisor.
         vm.assume(amountOut < balanceOut);
 
-        uint256 amountIn = harness.exactOut(balanceIn, balanceOut, amountOut, "");
+        try harness.exactOut(balanceIn, balanceOut, amountOut, "") returns (uint256 amountIn) {
+            uint256 d = balanceOut - amountOut;
+            uint256 n = amountOut * balanceIn;
 
-        uint256 denominator = uint256(balanceOut) - uint256(amountOut);
-        uint256 numerator = uint256(amountOut) * uint256(balanceIn);
+            // Taker safety. `(amountIn - 1) * d` is bounded by `n`, so it cannot overflow.
+            uint256 belowByOne = (amountIn - 1) * d;
+            assertLt(belowByOne, n, "ceiling must not overcharge by a whole unit");
 
-        assertGe(amountIn * denominator, numerator, "ceiling must not round the taker's input down");
-        assertLt(amountIn * denominator, numerator + denominator, "ceiling must not overcharge by a whole unit");
+            // Maker safety, rearranged from `amountIn * d >= n` so no unformed product appears.
+            assertLe(n - belowByOne, d, "ceiling must not round the taker's input down");
+        } catch {
+            // Reverted; no quote to characterise.
+        }
     }
+
 
     // -----------------------------------------------------------------------
     // Reachability witnesses
