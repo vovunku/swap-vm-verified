@@ -35,12 +35,27 @@ All 17 specs pass as Foundry fuzz tests. Under Kontrol, as of the last run:
 | `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
 | `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
 | `XYCSwapSpec.test_exactIn_cannotDrainPool` | pending |
+| `BalancesSpec.setUp()` | PASSED |
+| `BalancesSpec.test_assignmentOrderedByTokenAddress` | PASSED |
+| `BalancesSpec.test_swappingTokensSwapsRegisterAssignment` | PASSED |
+| `BalancesSpec.test_revertsUnlessBothIncomingBalancesZero` | PASSED |
+| `BalancesSpec.test_succeedsWithBothIncomingBalancesZero` | PASSED |
+| `BalancesSpec.test_zeroArgsIsNoOpWhenRegistersZero` | PASSED |
 | everything else | not yet attempted |
 
-The two passing proofs confirm the harness shape works end to end: an `internal pure`
+The two original passing proofs confirm the harness shape works end to end: an `internal pure`
 instruction, reached through an external harness that assembles `Context` in memory, is
 provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` is the first
 property that does, and so the first real test of the lemma library.
+
+The `BalancesSpec` set closes without new lemmas (Track A3): `_staticBalancesXD` does no
+arithmetic, only a `tokenIn < tokenOut` branch and two calldata word reads. All six
+properties are now machine-checked, including the token-address ordering of the args and
+the zero-balance guard that rejects a second application. The proofs are slower than their
+lack of arithmetic suggests — the bottleneck is symbolic calldata reasoning
+(`uint256(bytes32(args))` plus the unchecked `Calldata.slice(32)` assembly), which is the
+first spec here to parse multi-word args. The swap-symmetry property, which makes two
+harness calls, is the most expensive of the set (~2h wall under contention).
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
 instruction as verified until it appears above.
