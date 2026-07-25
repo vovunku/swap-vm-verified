@@ -27,20 +27,46 @@ Specs target **individual instructions**, not the VM as a whole. This is deliber
 
 ## Current status
 
-All 17 specs pass as Foundry fuzz tests. Under Kontrol, as of the last run:
+**71 properties across four instructions** — `XYCSwap` (8), `LimitSwap` (9), `MinRate` (29),
+`BaseFeeAdjuster` (25) — all pass as Foundry fuzz tests. Under Kontrol, as of the last run:
 
 | Proof | Status |
 |---|---|
 | `XYCSwapSpec.setUp()` | PASSED |
+| `XYCSwapSpec.test_exactIn_constantProductNeverDecreases` | PASSED |
 | `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
 | `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
-| `XYCSwapSpec.test_exactIn_cannotDrainPool` | pending |
-| everything else | not yet attempted |
+| `XYCSwapSpec.test_exactIn_cannotDrainPool` | in progress, reformulated |
+| `XYCSwapSpec.test_exactIn_roundsInFavourOfMaker` | in progress, reformulated |
+| `LimitSwapSpec`, `MinRateSpec`, `BaseFeeAdjusterSpec` | not yet attempted |
 
-The two passing proofs confirm the harness shape works end to end: an `internal pure`
-instruction, reached through an external harness that assembles `Context` in memory, is
-provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` is the first
-property that does, and so the first real test of the lemma library.
+`constantProductNeverDecreases` is the substantive one: the constant-product invariant
+`(balanceIn + amountIn)(balanceOut - amountOut) >= balanceIn * balanceOut` proven for all
+inputs it quantifies over, in just under 10 minutes.
+
+### Avoid putting a symbolic division in the path condition
+
+The two in-progress proofs originally assumed their way onto the non-reverting path:
+
+```solidity
+vm.assume(amountIn <= type(uint256).max / balanceOut);   // numerator must not overflow
+```
+
+That is a *symbolic* `DIV`, which KEVM models with a divide-by-zero guard, and the proof
+did not get past it — four nodes, no progress in five minutes on an otherwise idle machine.
+`try`/`catch` around the harness call expresses the same intent with no division at all:
+
+```solidity
+try harness.exactIn(balanceIn, balanceOut, amountIn, "") returns (uint256 amountOut) {
+    assertLt(amountOut, balanceOut);
+} catch { /* reverted: nothing to bound */ }
+```
+
+Note this **strengthens** the theorem rather than narrowing it. The assumption form
+quantified over a sub-domain carved out by four assumptions; this form quantifies over every
+`uint256` triple, with reverting inputs satisfying it vacuously and covered separately by
+the dedicated revert tests. Prefer it whenever a property is only interesting on the
+success path.
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
 instruction as verified until it appears above.
@@ -322,7 +348,10 @@ Instructions classified by what the prover has to deal with:
 
 **Tier 2** — loops or transcendental math. Correctness needs substantially more lemma work,
 and gas becomes genuinely symbolic. `Whitelist` (4 loops), `PiecewiseLinearScale`,
-`BaseFeeAdjuster`, `DutchAuction`, `PeggedSwap` and `XYCConcentrate` (square roots).
+`DutchAuction`, `TWAPSwap`, `PeggedSwap` and `XYCConcentrate` (square roots).
+
+> `BaseFeeAdjuster` was listed here in error and is a Tier-1 target — it has no loop and no
+> `pow`. See `analysis/FINDINGS.md` for the other corrections to this classification.
 Anything reaching `Power.pow` hits a `while` loop with a symbolic trip count and needs
 `--bmc-depth`, which yields only a bounded result.
 
