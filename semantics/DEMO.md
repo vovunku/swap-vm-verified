@@ -146,6 +146,18 @@ the production VM generates anyway.
 
 Current: 19 Solidity tests, 6 K conformance cases, all agreeing.
 
+## 5a. Coverage: 3 of 52 opcodes
+
+The enum in `src/libs/OpcodeList.sol` defines **52 named opcodes**. The semantics implements
+**three** — `0x23`, `0x90`, `0x53` — exactly what this one program uses.
+
+What *is* complete is the **decode loop**: fetch, argument slicing, program-counter advance and
+the bound check, faithful to `VM.sol:118-150` and conformance-tested. That is the reusable
+part; instructions are additive on top of it.
+
+Everything else falls through to the `[owise]` no-op. So the honest scope of this work is *one
+program, three instructions* — a demonstrator for the method, not coverage of the VM.
+
 ## 6. Known gaps, stated plainly
 
 - **The SDK mismatch** (§1). Unresolved whether the SDK targets Aqua deployments, this fork has
