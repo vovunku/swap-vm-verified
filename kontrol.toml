@@ -64,8 +64,18 @@ optimize-kcfg              = true
 
 # `max-frontier-parallel` sets the server's GHCRTS=-N (kontrol/prove.py:359 ->
 # pyk/kore/rpc.py:1322). At its default of 1, every kore-rpc-booster process runs with a
-# single Haskell capability, so `workers = 4` was using at most 4 of 16 cores.
-max-frontier-parallel      = 4
+# single Haskell capability, so a lone `workers = 4` run uses at most 4 of 16 cores.
+#
+# BUT it multiplies with concurrency, and that recommendation assumed one prove run at a
+# time. With several agents proving at once the arithmetic is
+#     agents x workers x max-frontier-parallel  =  Haskell threads
+# and at 5 agents x 2 workers x 4 that is ~40 threads on 16 cores. Measured: load average
+# 27.8 with 73 live backend servers, i.e. ~175% oversubscribed, which looks exactly like
+# proofs being "stuck" when they are only starved.
+#
+# 2 is the value for a shared machine running several agents. Raise it toward 4 only when
+# a single proof has the box to itself.
+max-frontier-parallel      = 2
 
 # `log-rewrites` defaults to true, and at `maintenance-rate = 1` the resulting proof.json
 # is rewritten every iteration - 150,180 rewrite-log entries and ~1 GB of disk writes for
