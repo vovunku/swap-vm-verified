@@ -50,9 +50,21 @@ schedule                   = 'CANCUN'
 # it: surviving edges have depths of 1207 and 3319, far beyond a basic block and beyond
 # the old max-depth.
 #
-# The capability is still available on demand: `kontrol section-edge <test> <edge>
-# --sections N` cuts a long edge into intermediate nodes after the fact, and the
-# [prove.inspect] profile below turns the break flags back on for one stuck proof.
+# !! THE A/B ABOVE DOES NOT GENERALISE. READ THIS BEFORE TRUSTING THE DEFAULT. !!
+#
+# It was measured on XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput, whose edges are
+# 1200-3300 steps -- long, straight, and exactly the shape that pays for cut-points without
+# benefiting. On instruction bodies with short branchy edges the result INVERTS. Measured on
+# PeggedSwapSpec.test_seam_deadCode_noSolutionIsUnreachable_exactOut: node 39 would not expand
+# AT ALL under this default across two ~20-minute runs plus an earlier 1217 s run, and
+# expanded within three minutes under [prove.inspect], taking the proof from 31 to 37 nodes.
+#
+# So: if a proof makes no progress under the default, try `--config-profile inspect` BEFORE
+# concluding it is blocked on a lemma or on difficulty. That is now the first diagnostic step,
+# not a last resort -- several stalls attributed to lemma gaps may be this.
+#
+# `kontrol section-edge <test> <edge> --sections N` also cuts a long edge into intermediate
+# nodes after the fact.
 max-depth                  = 100000
 break-on-basic-blocks      = false
 break-on-calls             = false

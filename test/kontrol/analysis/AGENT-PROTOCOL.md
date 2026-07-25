@@ -44,6 +44,15 @@ spec can rebuild and prove it itself, in seconds, without disturbing anyone:
 
 `kontrol build` is only needed when `lemmas.k` changes, and remains coordinator-only.
 
+**If a proof will not progress, try `--config-profile inspect` before blaming a lemma.** The
+default profile's settings were measured on one long-straight-edged property and do NOT
+generalise: on a branchy instruction body a node that would not expand at all under the
+default expanded in three minutes under `inspect`. This is the first diagnostic step.
+
+**Do not run `--haskell-log-entries DebugApplyEquation,DebugTerm` while other agents work.**
+One such run held 47-52 GB across two boosters, drove the box to load 34 with swap exhausted,
+and got its sibling OOM-killed. Take the machine alone for it, or don't run it.
+
 **Every agent ends with a HANDOFF section.** That is the unit of work the coordinator acts
 on. An agent that made no progress still writes one, saying what blocked it — a blocked
 handoff naming the obstacle is worth more than a plausible-sounding non-result.
