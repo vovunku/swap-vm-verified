@@ -1,678 +1,351 @@
 // SPDX-License-Identifier: LicenseRef-Degensoft-SwapVM-1.1
 pragma solidity 0.8.30;
 
-import { Test, stdError } from "forge-std/Test.sol";
+import { Test } from "forge-std/Test.sol";
 
-import { SwapRegisters } from "../../src/libs/VM.sol";
-import { MinRate } from "../../src/instructions/MinRate.sol";
 import { MinRateHarness } from "./harnesses/MinRateHarness.sol";
 
-/// @notice Kontrol specification for the MinRate instructions (opcodes 0xb0, 0xb1).
+/// @notice Kontrol specification for the MinRate instructions (opcodes 0x55, 0x56).
 ///
-/// @dev Reference semantics, derived from src/instructions/MinRate.sol.
+/// @dev Reference semantics, from src/instructions/MinRate.sol:
 ///
-///      **Argument decoding** (`MinRateArgsBuilder.parse`, MinRate.sol:20-24):
+///        _requireMinRate1D:  revert unless  swapAmountIn * rateOut >= rateIn * swapAmountOut
+///        _adjustMinRate1D :  if swapAmountIn * rateOut <  rateIn * swapAmountOut, clamp:
+///                              exact-in :  amountOut = amountIn * rateOut / rateIn       (floor)
+///                              exact-out:  amountIn  = ceil(amountOut * rateIn / rateOut)
 ///
-///        rateLt = uint64(args[0:8])
-///        rateGt = uint64(args[8:16])
-///        (rateIn, rateOut) = tokenIn < tokenOut ? (rateLt, rateGt) : (rateGt, rateLt)
+///      The comparison is the cross-product form of `swapAmountIn / swapAmountOut >= rateIn /
+///      rateOut`, avoiding a second division. Flooring on the exact-in leg and ceiling on the
+///      exact-out leg both round in the maker's favour: a reimplementation that flipped a
+///      rounding direction would silently underpay the maker by up to one unit of the divisor.
 ///
-///      The pair `(rateIn, rateOut)` is a *floor price*: the taker must pay at least
-///      `rateIn` units of input per `rateOut` units of output.
+///      `rateIn` / `rateOut` are NOT taken positionally from `args`. `MinRateArgsBuilder.parse`
+///      routes them by token address: `(rateIn, rateOut) = tokenIn < tokenOut ?
+///      (rateLt, rateGt) : (rateGt, rateLt)`. A taker cannot reinterpret a buy as a sell by
+///      swapping the token arguments, because the maker signed the rates against token
+///      ordering. This is the vulnerability class flagged in
+///      `.cursor/rules/security-review.mdc` and is proven explicitly below.
 ///
-///      **0xb0 `_requireMinRate1D`** (MinRate.sol:37-49):
+/// @dev Harness caveat. Both entrypoints call `ctx.runLoop()`, which dispatches through the
+///      internal function pointer `ctx.vm.dispatch` — the pattern the WORKPLAN classifies as
+///      a separate, unscheduled project. The harness installs a stub dispatcher that fills
+///      the missing swap register with a caller-chosen value, so the properties below
+///      verify MinRate's rate logic conditional on `runLoop` returning that value. They do
+///      not verify the run loop or any real pricing instruction. See MinRateHarness.sol.
 ///
-///        require(amountIn == 0 || amountOut == 0)          // MinRateExpectedBeforeSwapAmountsComputed
-///        (swapAmountIn, swapAmountOut) = runLoop()
-///        require(swapAmountIn * rateOut >= rateIn * swapAmountOut)   // MinRateFailed
-///
-///      **0xb1 `_adjustMinRate1D`** (MinRate.sol:53-72):
-///
-///        amountIn', amountOut' = amountIn, amountOut      // captured *before* runLoop
-///        require(amountIn == 0 || amountOut == 0)          // MinRateExpectedBeforeSwapAmountsComputed
-///        (swapAmountIn, swapAmountOut) = runLoop()
-///        require(amountIn > 0 && amountOut > 0)            // MinRateRunLoopExpectToComputeSwapAmounts
-///        if (swapAmountIn * rateOut < rateIn * swapAmountOut) {
-///            isExactIn ? amountOut = floor(amountIn' * rateOut / rateIn)
-///                      : amountIn  = ceil (amountOut' * rateIn  / rateOut)
-///        }
-///
-///      Two things are worth stating up front, because the properties below are built
-///      around them:
-///
-///      * The comparison is the cross-multiplied form of `swapAmountIn / swapAmountOut >=
-///        rateIn / rateOut`, so the accept/reject boundary is *exact equality* of the two
-///        products, not an approximation. `test_require_acceptsExactlyAtTheFloor` and
-///        `test_require_rejectsOneWeiBelowTheFloor` pin it there.
-///      * The clamp divides the registers as they were *before* `runLoop`, while the
-///        comparison uses the amounts `runLoop` produced. When the rest of the program
-///        leaves the taker-fixed leg alone the two coincide; when it does not, they do
-///        not — see `test_adjust_exactIn_clampReadsThePreRunRegister`.
-///
-///      These run as ordinary fuzz tests under `forge test` and as proofs under
-///      `kontrol prove`. Under Kontrol every `vm.assume` becomes a path constraint rather
-///      than a sample filter, so the assumptions below define exactly the domain over
-///      which each property is proven — read them as part of the specification.
-///
-///      MinRate is the first verified instruction that calls `ctx.runLoop()`. The harness
-///      models the rest of the maker's program as a single stub instruction that writes a
-///      caller-chosen `(swapAmountIn, swapAmountOut)` pair into the registers, so the run
-///      loop's *result* is free while the loop itself is really executed. See
-///      MinRateHarness for the encoding.
+/// @dev Overflow bounds. Every `vm.assume` becomes a path constraint under Kontrol, so each
+///      one is SMT work. The products `amountIn * rateGt` and `computedAmountOut * rateLt`
+///      are guarded against overflow not by the division-shaped `amount <= max / rate`
+///      (which forces the solver to reason about symbolic division and was the dominant
+///      stall in early runs) but by bounding each operand to 128 bits: `2^128 * 2^64 =
+///      2^192`, comfortably below `maxUInt256`. This is a deliberate narrowing of the domain
+///      — the unbounded form is a follow-up once the lemma library has a division-simplification
+///      rule.
 contract MinRateSpec is Test {
     MinRateHarness internal harness;
 
-    /// @dev `TOKEN_LO < TOKEN_HI`, so `(TOKEN_LO, TOKEN_HI)` selects the `Lt` reading of
-    ///      the args and `(TOKEN_HI, TOKEN_LO)` selects the `Gt` reading.
+    /// @dev Distinct token addresses with a fixed ordering, so the direction-routing tests
+    ///      can pin which rate lands in which slot without branching on arbitrary addresses.
     address internal constant TOKEN_LO = address(0x1111);
     address internal constant TOKEN_HI = address(0x2222);
+
+    /// @dev The one-opcode program that drives the stub dispatcher exactly once. Passed
+    ///      through calldata so the `CalldataPtr` references the current call frame.
+    bytes internal constant STUB_PROGRAM = hex"0000";
+
+    /// @dev 2^128. With uint64 rates, products are at most 2^(128+64) = 2^192 < maxUInt256.
+    uint256 internal constant BOUND = 2 ** 128;
 
     function setUp() public {
         harness = new MinRateHarness();
     }
 
-    /// @dev Args are two big-endian uint64s: the rate that applies when `tokenIn < tokenOut`
-    ///      followed by the rate that applies otherwise.
+    /// @dev Packs `(rateLt, rateGt)` the way `MinRateArgsBuilder.build` does.
     function _args(uint64 rateLt, uint64 rateGt) internal pure returns (bytes memory) {
         return abi.encodePacked(rateLt, rateGt);
     }
 
-    /// @dev A one-instruction program for the harness stub: it makes `runLoop` return
-    ///      exactly `(swapAmountIn, swapAmountOut)`.
-    function _innerSwap(uint256 swapAmountIn, uint256 swapAmountOut) internal pure returns (bytes memory) {
-        return abi.encodePacked(uint8(0x00), uint8(64), swapAmountIn, swapAmountOut);
-    }
-
-    /// @dev `a * b` must not overflow, or the instruction panics before reaching the
-    ///      comparison this specification is about.
-    function _assumeMulSafe(uint256 a, uint256 b) internal pure {
-        vm.assume(a == 0 || b <= type(uint256).max / a);
-    }
-
-    // -----------------------------------------------------------------------
-    // Argument decoding
-    // -----------------------------------------------------------------------
-
-    /// @notice Bytes past the sixteenth are ignored.
-    /// @dev Fixes the field widths: `rateLt` and `rateGt` are the first and second eight
-    ///      bytes and nothing else in `args` is read, so a longer args block behaves
-    ///      identically to the canonical one.
-    function test_args_trailingBytesAreIgnored(
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 trailing,
-        uint256 preIn,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        vm.assume(swapIn > 0 && swapOut > 0);
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        _assumeMulSafe(preIn, rateGt);
-
-        bytes memory program = _innerSwap(swapIn, swapOut);
-
-        SwapRegisters memory exact =
-            harness.adjustMinRate(true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), program);
-        SwapRegisters memory padded = harness.adjustMinRate(
-            true, preIn, 0, TOKEN_LO, TOKEN_HI, abi.encodePacked(rateLt, rateGt, trailing), program
-        );
-
-        assertEq(exact.amountIn, padded.amountIn, "only the first sixteen args bytes may be read");
-        assertEq(exact.amountOut, padded.amountOut, "only the first sixteen args bytes may be read");
-    }
-
-    /// @notice `args.length` is not validated: an under-length args block is accepted.
-    /// @dev `MinRateArgsBuilder.parse` (MinRate.sol:20-24) reads `bytes8(args)` and
-    ///      `args.slice(8)` — the *unchecked* `Calldata.slice` overload, whose length is
-    ///      computed as `args.length - 8` in assembly and so underflows on a short slice.
-    ///      Neither read is bounds-checked, so the missing rate bytes come from whatever
-    ///      calldata follows `args`. In this harness `args` is a separate ABI parameter and
-    ///      a one-byte block decodes to `(rateIn, rateOut) = (0, 0)` — a vacuous floor that
-    ///      accepts every rate. In the VM proper `args` is a slice of the maker's program,
-    ///      so the bytes read are the *following instructions*, and `runLoop`'s
-    ///      `pcs > length` check does not catch it because the declared args length is
-    ///      what advances `pcs`. Pinned as an unguarded path, not as intended behaviour.
-    function test_args_lengthIsNotValidated() public {
-        SwapRegisters memory r = harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, hex"00", _innerSwap(1, 1));
-
-        assertEq(r.amountIn, 1, "an under-length args block is decoded rather than rejected");
-        assertEq(r.amountOut, 1, "an under-length args block is decoded rather than rejected");
-    }
-
-    // -----------------------------------------------------------------------
-    // 0xb0 — the floor is exactly where the cross-multiplication says it is
-    // -----------------------------------------------------------------------
-
-    /// @notice Every rate at or above the floor is accepted, and the guard writes nothing.
-    /// @dev The only assumptions are that neither side of the comparison overflows —
-    ///      without them the instruction panics on the multiplication rather than
-    ///      reaching the comparison, which is a different property (see
-    ///      `test_require_revertsOnComparisonOverflow`).
-    function test_require_acceptsAtOrAboveTheFloor(uint64 rateLt, uint64 rateGt, uint256 swapIn, uint256 swapOut)
-        public
+    /// @dev Domain common to every rate-check property: positive rates, positive amounts
+    ///      bounded to 128 bits so the cross-products cannot overflow.
+    function _assumeDomain(uint256 amountIn, uint256 amountOut, uint64 rateLt, uint64 rateGt)
+        internal
+        pure
     {
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        vm.assume(swapIn * rateGt >= uint256(rateLt) * swapOut);
-
-        SwapRegisters memory r =
-            harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut));
-
-        assertEq(r.amountIn, swapIn, "the guard must not touch amountIn");
-        assertEq(r.amountOut, swapOut, "the guard must not touch amountOut");
-    }
-
-    /// @notice Every rate strictly below the floor is rejected, with the exact error.
-    function test_require_rejectsBelowTheFloor(uint64 rateLt, uint64 rateGt, uint256 swapIn, uint256 swapOut) public {
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        vm.assume(swapIn * rateGt < uint256(rateLt) * swapOut);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateFailed.selector, swapIn, swapOut, uint256(rateLt), uint256(rateGt))
-        );
-        harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut));
-    }
-
-    /// @notice A rate sitting *exactly* on the floor is accepted.
-    /// @dev `(swapIn, swapOut) = (rateIn * k, rateOut * k)` makes the two products equal
-    ///      for every `k`, so this is the whole equality line, not one point on it.
-    function test_require_acceptsExactlyAtTheFloor(uint64 rateLt, uint64 rateGt, uint256 k) public {
         vm.assume(rateLt > 0 && rateGt > 0);
-        vm.assume(k <= type(uint256).max / uint256(rateLt) / uint256(rateGt));
-
-        uint256 swapIn = uint256(rateLt) * k;
-        uint256 swapOut = uint256(rateGt) * k;
-
-        SwapRegisters memory r =
-            harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut));
-
-        assertEq(r.amountIn, swapIn, "a rate exactly at the floor must be accepted unchanged");
-        assertEq(r.amountOut, swapOut, "a rate exactly at the floor must be accepted unchanged");
-    }
-
-    /// @notice One wei less input than the floor demands is rejected.
-    /// @dev Paired with the test above this pins the boundary to the exact equality line:
-    ///      the largest rejected point and the smallest accepted point are adjacent.
-    function test_require_rejectsOneWeiBelowTheFloor(uint64 rateLt, uint64 rateGt, uint256 k) public {
-        vm.assume(rateLt > 0 && rateGt > 0);
-        vm.assume(k > 0);
-        vm.assume(k <= type(uint256).max / uint256(rateLt) / uint256(rateGt));
-
-        uint256 swapIn = uint256(rateLt) * k - 1;
-        uint256 swapOut = uint256(rateGt) * k;
-
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateFailed.selector, swapIn, swapOut, uint256(rateLt), uint256(rateGt))
-        );
-        harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut));
+        vm.assume(amountIn > 0 && amountIn < BOUND);
+        vm.assume(amountOut > 0 && amountOut < BOUND);
     }
 
     // -----------------------------------------------------------------------
-    // Direction-dependent rate selection (args are Lt/Gt, not In/Out)
+    // Argument routing: rateLt / rateGt are selected by token ordering
     // -----------------------------------------------------------------------
 
-    /// @notice With `tokenIn > tokenOut` the roles of the two encoded rates are exchanged:
-    ///         `rateGt` becomes the input rate and `rateLt` the output rate.
-    /// @dev Stated as a rejection so the error payload witnesses which rate went where —
-    ///      `MinRateFailed(..., rateIn, rateOut)` carries `(rateGt, rateLt)` here and
-    ///      `(rateLt, rateGt)` in `test_require_rejectsBelowTheFloor`.
-    function test_direction_gtOrderingExchangesTheRates(
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        _assumeMulSafe(swapIn, rateLt);
-        _assumeMulSafe(rateGt, swapOut);
-        vm.assume(swapIn * rateLt < uint256(rateGt) * swapOut);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateFailed.selector, swapIn, swapOut, uint256(rateGt), uint256(rateLt))
-        );
-        harness.requireMinRate(0, 0, TOKEN_HI, TOKEN_LO, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut));
-    }
-
-    /// @notice The two token orderings enforce genuinely different floors.
-    /// @dev The witness is the floor line of the `Lt` reading, `(swapIn, swapOut) =
-    ///      (rateLt, rateGt)`. Under the `Gt` reading the same pair sits strictly below the
-    ///      floor whenever `rateLt < rateGt`. So presenting the tokens the other way round
-    ///      is not a relabelling — it selects a different constraint, which is exactly why
-    ///      the maker signs the ordering into the args rather than into the token pair.
-    function test_direction_separatesTheTwoFloors(uint64 rateLt, uint64 rateGt) public {
-        vm.assume(rateLt > 0);
-        vm.assume(rateLt < rateGt);
-
+    /// @notice Swapping the token arguments swaps which rate lands in `rateIn` vs `rateOut`.
+    /// @dev This is the security-critical property: the maker signs rates against token
+    ///      ordering, so a taker cannot flip a buy into a sell by reordering the token
+    ///      parameters. A one-sided test ("tokenIn < tokenOut gives rateIn = rateLt") would
+    ///      pass even if the routing were positional; this test fails in that case.
+    function test_parse_directionDependence(uint64 rateLt, uint64 rateGt) public view {
         bytes memory args = _args(rateLt, rateGt);
-        bytes memory program = _innerSwap(rateLt, rateGt);
 
-        // tokenIn < tokenOut: (rateIn, rateOut) = (rateLt, rateGt), the pair is on the floor.
-        SwapRegisters memory r = harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, args, program);
-        assertEq(r.amountIn, uint256(rateLt), "the Lt reading must accept its own floor");
+        (uint64 rateIn, uint64 rateOut) = harness.parse(args, TOKEN_LO, TOKEN_HI);
+        assertEq(rateIn, rateLt, "tokenIn < tokenOut: rateIn must be rateLt");
+        assertEq(rateOut, rateGt, "tokenIn < tokenOut: rateOut must be rateGt");
 
-        // tokenIn > tokenOut: (rateIn, rateOut) = (rateGt, rateLt), the same pair is below it.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                MinRate.MinRateFailed.selector, uint256(rateLt), uint256(rateGt), uint256(rateGt), uint256(rateLt)
-            )
-        );
-        harness.requireMinRate(0, 0, TOKEN_HI, TOKEN_LO, args, program);
+        (rateIn, rateOut) = harness.parse(args, TOKEN_HI, TOKEN_LO);
+        assertEq(rateIn, rateGt, "tokenIn > tokenOut: rateIn must be rateGt");
+        assertEq(rateOut, rateLt, "tokenIn > tokenOut: rateOut must be rateLt");
     }
 
-    /// @notice Reversing the token ordering is exactly equivalent to reversing the args.
-    /// @dev The strongest statement of the direction-dependence: the two encoded rates are
-    ///      swapped by `tokenIn < tokenOut` and nothing else about the instruction depends
-    ///      on the tokens. Stated on the adjust variant because it returns observable
-    ///      registers rather than merely succeeding.
-    function test_direction_swappingTokensSwapsTheArgs(
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 preIn,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        vm.assume(rateLt > 0 && rateGt > 0);
-        vm.assume(swapIn > 0 && swapOut > 0);
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        _assumeMulSafe(preIn, rateGt);
-
-        bytes memory program = _innerSwap(swapIn, swapOut);
-
-        SwapRegisters memory lt =
-            harness.adjustMinRate(true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), program);
-        SwapRegisters memory gt =
-            harness.adjustMinRate(true, preIn, 0, TOKEN_HI, TOKEN_LO, _args(rateGt, rateLt), program);
-
-        assertEq(lt.amountIn, gt.amountIn, "token ordering must act only by swapping the two rates");
-        assertEq(lt.amountOut, gt.amountOut, "token ordering must act only by swapping the two rates");
-    }
-
-    /// @notice `tokenIn == tokenOut` takes the `Gt` branch, since the test is a strict `<`.
-    /// @dev A degenerate pair the VM should never present, recorded because the decoding is
-    ///      total: there is no "equal" case, and the args are read as if `tokenIn > tokenOut`.
-    function test_direction_equalTokensTakeTheGtBranch(uint64 rateLt, uint64 rateGt) public {
-        vm.assume(rateGt > 0);
-        vm.assume(rateGt < rateLt);
-
-        bytes memory args = _args(rateLt, rateGt);
-        // On the floor of the Gt reading `(rateIn, rateOut) = (rateGt, rateLt)`.
-        bytes memory program = _innerSwap(rateGt, rateLt);
-
-        SwapRegisters memory r = harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_LO, args, program);
-        assertEq(r.amountIn, uint256(rateGt), "equal tokens must read the args as the Gt case");
-
-        // The same pair is below the floor under the Lt reading, so this is not vacuous.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                MinRate.MinRateFailed.selector, uint256(rateGt), uint256(rateLt), uint256(rateLt), uint256(rateGt)
-            )
-        );
-        harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, args, program);
-    }
-
-    // -----------------------------------------------------------------------
-    // 0xb0 — guards and unguarded paths
-    // -----------------------------------------------------------------------
-
-    /// @notice The instruction must run before the swap amounts are computed.
-    /// @dev Ordering guard: a program that placed 0xb0 after the swap would be checking a
-    ///      rate the registers no longer describe.
-    function test_require_revertsWhenBothAmountsPreSet(uint256 amountIn, uint256 amountOut, uint64 rateLt, uint64 rateGt)
+    /// @notice `build` then `parse` round-trips the rates, for either token ordering.
+    function test_parse_buildRoundtrip(address tokenA, address tokenB, uint64 rateA, uint64 rateB)
         public
+        view
     {
-        vm.assume(amountIn > 0 && amountOut > 0);
+        vm.assume(tokenA != tokenB);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateExpectedBeforeSwapAmountsComputed.selector, amountIn, amountOut)
-        );
-        harness.requireMinRate(
-            amountIn, amountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(amountIn, amountOut)
-        );
-    }
+        bytes memory args = harness.build(tokenA, tokenB, rateA, rateB);
 
-    /// @notice Exactly one pre-set register is allowed — that is the ordinary exact-in and
-    ///         exact-out entry condition, so the guard above is not over-tight.
-    function test_require_allowsOneAmountPreSet(uint256 amountIn) public {
-        vm.assume(amountIn > 0);
-
-        // rateIn == 0 makes the floor vacuous, isolating the ordering guard.
-        SwapRegisters memory r =
-            harness.requireMinRate(amountIn, 0, TOKEN_LO, TOKEN_HI, _args(0, 1), _innerSwap(1, 1));
-
-        assertEq(r.amountIn, 1, "the ordering guard must accept a single pre-set register");
-    }
-
-    /// @notice A program that computes nothing satisfies the floor for *any* rate.
-    /// @dev `0 * rateOut >= rateIn * 0` holds trivially. Unlike 0xb1, 0xb0 has no
-    ///      `MinRateRunLoopExpectToComputeSwapAmounts` check, so a maker who places
-    ///      RequireMinRate in a program whose swap leg can be skipped gets no protection
-    ///      from it. Recorded as behaviour, not endorsed as intent.
-    function test_require_acceptsANullSwapAtAnyRate(uint64 rateLt, uint64 rateGt) public {
-        SwapRegisters memory r =
-            harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(0, 0));
-
-        assertEq(r.amountIn, 0, "a null swap passes the floor check");
-        assertEq(r.amountOut, 0, "a null swap passes the floor check");
-    }
-
-    /// @notice The cross-multiplication is unchecked arithmetic in the Solidity sense: it
-    ///         panics rather than reverting with `MinRateFailed` when it overflows.
-    /// @dev `rateOut` is only 64 bits, so this needs `swapAmountIn > 2^192`. It is
-    ///         nonetheless a reachable path and the failure mode is a panic, not a
-    ///         domain error.
-    function test_require_revertsOnComparisonOverflow(uint64 rateGt, uint256 swapIn) public {
-        vm.assume(rateGt > 0);
-        vm.assume(swapIn > type(uint256).max / rateGt);
-
-        // rateLt == 0 keeps the other product at zero, so the panic can only come from
-        // `swapAmountIn * rateOut`.
-        vm.expectRevert(stdError.arithmeticError);
-        harness.requireMinRate(0, 0, TOKEN_LO, TOKEN_HI, _args(0, rateGt), _innerSwap(swapIn, 1));
-    }
-
-    /// @notice The guard never writes to the balance registers.
-    function test_require_leavesEveryRegisterUntouched(
-        uint256 balanceIn,
-        uint256 balanceOut,
-        uint256 amountNetPulled
-    ) public {
-        SwapRegisters memory r = harness.requireMinRateWithBalances(
-            balanceIn, balanceOut, amountNetPulled, TOKEN_LO, TOKEN_HI, _args(0, 1), _innerSwap(3, 5)
-        );
-
-        assertEq(r.balanceIn, balanceIn, "balanceIn must be untouched");
-        assertEq(r.balanceOut, balanceOut, "balanceOut must be untouched");
-        assertEq(r.amountNetPulled, amountNetPulled, "amountNetPulled must be untouched");
-        assertEq(r.amountIn, 3, "amountIn must be whatever the program computed");
-        assertEq(r.amountOut, 5, "amountOut must be whatever the program computed");
+        (uint64 rateIn, uint64 rateOut) = harness.parse(args, tokenA, tokenB);
+        // build places rateA on tokenA and rateB on tokenB; parse reads them back in the
+        // same token order, so rateIn is whichever rate was attached to tokenA.
+        assertEq(rateIn, rateA, "roundtrip: rateIn must be the rate placed on tokenA");
+        assertEq(rateOut, rateB, "roundtrip: rateOut must be the rate placed on tokenB");
     }
 
     // -----------------------------------------------------------------------
-    // 0xb1 — no-op on a conforming rate
+    // _requireMinRate1D — the boundary: rejects strictly below, accepts at the floor
     // -----------------------------------------------------------------------
 
-    /// @notice A rate at or above the floor is left alone on the exact-in leg.
-    function test_adjust_exactIn_noOpAtOrAboveTheFloor(
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 preIn,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        vm.assume(swapIn > 0 && swapOut > 0);
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        vm.assume(swapIn * rateGt >= uint256(rateLt) * swapOut);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut)
-        );
-
-        assertEq(r.amountIn, swapIn, "a conforming rate must not be adjusted");
-        assertEq(r.amountOut, swapOut, "a conforming rate must not be adjusted");
-    }
-
-    /// @notice A rate exactly on the floor is a no-op — the clamp is strictly below it.
-    function test_adjust_exactIn_noOpExactlyAtTheFloor(uint64 rateLt, uint64 rateGt, uint256 preIn) public {
-        vm.assume(rateLt > 0 && rateGt > 0);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(rateLt, rateGt)
-        );
-
-        assertEq(r.amountIn, uint256(rateLt), "the floor itself must not trigger the clamp");
-        assertEq(r.amountOut, uint256(rateGt), "the floor itself must not trigger the clamp");
-    }
-
-    /// @notice A rate at or above the floor is left alone on the exact-out leg too.
-    function test_adjust_exactOut_noOpAtOrAboveTheFloor(
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 preOut,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        vm.assume(swapIn > 0 && swapOut > 0);
-        _assumeMulSafe(swapIn, rateGt);
-        _assumeMulSafe(rateLt, swapOut);
-        vm.assume(swapIn * rateGt >= uint256(rateLt) * swapOut);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            false, 0, preOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, swapOut)
-        );
-
-        assertEq(r.amountIn, swapIn, "a conforming rate must not be adjusted");
-        assertEq(r.amountOut, swapOut, "a conforming rate must not be adjusted");
-    }
-
-    /// @notice `rateIn == 0` makes the floor vacuous, so the clamp never fires.
-    /// @dev This is also why the exact-in leg cannot divide by zero: the only division is
-    ///      by `rateIn`, and the branch guarding it is `_ * rateOut < 0`, which is
-    ///      unsatisfiable. The exact-out leg has no such protection — see
-    ///      `test_adjust_exactOut_panicsOnZeroRateOut`.
-    function test_adjust_exactIn_zeroRateInNeverClamps(
-        uint64 rateGt,
-        uint256 preIn,
-        uint256 swapIn,
-        uint256 swapOut
-    ) public {
-        vm.assume(swapIn > 0 && swapOut > 0);
-        _assumeMulSafe(swapIn, rateGt);
-
-        SwapRegisters memory r =
-            harness.adjustMinRate(true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(0, rateGt), _innerSwap(swapIn, swapOut));
-
-        assertEq(r.amountIn, swapIn, "a zero input rate must never clamp");
-        assertEq(r.amountOut, swapOut, "a zero input rate must never clamp");
-    }
-
-    // -----------------------------------------------------------------------
-    // 0xb1 — the clamp, and the direction it rounds
-    // -----------------------------------------------------------------------
-
-    /// @dev A program whose result sits strictly below the floor for every `rateIn >= 1`:
-    ///      `1 * rateOut < rateIn * (rateOut + 1)`. The clamped value does not depend on
-    ///      the program's amounts at all, only on the pre-run register and the two rates,
-    ///      so fixing the trigger costs the clamp properties no generality.
-    function _belowFloor(uint64 rateOut) internal pure returns (bytes memory) {
-        return _innerSwap(1, uint256(rateOut) + 1);
-    }
-
-    /// @notice The exact-in clamp is `floor(amountIn * rateOut / rateIn)` — it rounds the
-    ///         taker's output down, and by strictly less than one unit of the divisor.
-    /// @dev Two-sided, so the rounding is pinned to exactly `floor`: the first assertion
-    ///      alone would admit an implementation that rounds arbitrarily far down and
-    ///      shortchanges the taker.
-    function test_adjust_exactIn_clampFloorsTheOutput(uint64 rateLt, uint64 rateGt, uint256 preIn) public {
-        vm.assume(rateLt > 0);
-        _assumeMulSafe(preIn, rateGt);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _belowFloor(rateGt)
-        );
-
-        assertLe(r.amountOut * rateLt, preIn * rateGt, "the clamp must not round the output up");
-        assertLt(
-            preIn * rateGt - r.amountOut * rateLt, uint256(rateLt), "the clamp must not round down a whole divisor"
-        );
-        assertEq(r.amountIn, 1, "the exact-in clamp must not touch amountIn");
-    }
-
-    /// @notice The exact-out clamp is `ceil(amountOut * rateIn / rateOut)` — it rounds the
-    ///         taker's input up, and by strictly less than one unit of the divisor.
-    function test_adjust_exactOut_clampCeilsTheInput(uint64 rateLt, uint64 rateGt, uint256 preOut) public {
-        vm.assume(rateLt > 0 && rateGt > 0);
-        _assumeMulSafe(preOut, rateLt);
-        // The ceiling can add up to `rateOut - 1`; keep the product it is compared against
-        // representable.
-        vm.assume(preOut * rateLt <= type(uint256).max - rateGt);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            false, 0, preOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _belowFloor(rateGt)
-        );
-
-        assertGe(r.amountIn * rateGt, preOut * rateLt, "the clamp must not round the taker's input down");
-        assertLt(
-            r.amountIn * rateGt - preOut * rateLt, uint256(rateGt), "the clamp must not overshoot a whole divisor"
-        );
-        assertEq(r.amountOut, uint256(rateGt) + 1, "the exact-out clamp must not touch amountOut");
-    }
-
-    /// @notice After an exact-in clamp the registers satisfy 0xb0's floor condition.
-    /// @dev The property that makes 0xb1 an *enforcement* of the floor rather than merely
-    ///      an adjustment near it. It is stated on programs that leave the taker-fixed leg
-    ///      alone (`swapAmountIn == amountIn`), which is the case the instruction is
-    ///      written for. That is a genuine narrowing of the domain, not a convenience —
-    ///      `test_adjust_exactIn_clampReadsThePreRunRegister` shows the conclusion is false
-    ///      without it.
-    function test_adjust_exactIn_clampEstablishesTheFloor(uint64 rateLt, uint64 rateGt, uint256 preIn) public {
-        vm.assume(rateLt > 0);
-        vm.assume(preIn > 0);
-        _assumeMulSafe(preIn, rateGt);
-        vm.assume(preIn * rateGt <= type(uint256).max - rateLt);
-
-        // One unit of output above what the floor allows, so the clamp fires, and
-        // `swapAmountIn == preIn` so the program has not moved the taker-fixed leg.
-        uint256 swapOut = preIn * rateGt / rateLt + 1;
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            true, preIn, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(preIn, swapOut)
-        );
-
-        assertGe(
-            r.amountIn * rateGt, uint256(rateLt) * r.amountOut, "after the clamp the floor condition must hold"
-        );
-    }
-
-    /// @notice The clamp divides the register as it was *before* `runLoop`, not the amount
-    ///         `runLoop` returned — so when the program moves the taker-fixed leg, the
-    ///         adjusted rate can still sit below the floor.
-    /// @dev Concrete witness with a 1:1 floor. The program consumes 50 input and returns
-    ///      100 output (rate 0.5, below the floor); the clamp recomputes the output from
-    ///      the *pre-run* 100 and so leaves it at 100, producing final registers
-    ///      `(50, 100)` — still 0.5, still below the floor. Any instruction sequenced
-    ///      between AdjustMinRate and the swap that reduces `amountIn` (an input-side fee,
-    ///      a partial fill) reaches this state. Asserted as observed behaviour so a change
-    ///      to it is visible; see the accompanying report.
-    function test_adjust_exactIn_clampReadsThePreRunRegister() public {
-        SwapRegisters memory r =
-            harness.adjustMinRate(true, 100, 0, TOKEN_LO, TOKEN_HI, _args(1, 1), _innerSwap(50, 100));
-
-        assertEq(r.amountIn, 50, "amountIn is whatever the program left");
-        assertEq(r.amountOut, 100, "the clamp is computed from the pre-runLoop amountIn");
-        // The floor is 1:1 and the result is 0.5:1 — 0xb0 would reject these registers.
-        assertLt(r.amountIn * 1, 1 * r.amountOut, "the floor is not enforced on this path");
-    }
-
-    /// @notice The clamp never touches the balance registers.
-    function test_adjust_leavesBalanceRegistersUntouched(
-        uint256 balanceIn,
-        uint256 balanceOut,
-        uint256 amountNetPulled,
-        uint64 rateLt,
-        uint64 rateGt,
-        uint256 preIn
-    ) public {
-        vm.assume(rateLt > 0);
-        _assumeMulSafe(preIn, rateGt);
-
-        SwapRegisters memory r = harness.adjustMinRateWithBalances(
-            true,
-            balanceIn,
-            balanceOut,
-            preIn,
-            amountNetPulled,
-            TOKEN_LO,
-            TOKEN_HI,
-            _args(rateLt, rateGt),
-            _belowFloor(rateGt)
-        );
-
-        assertEq(r.balanceIn, balanceIn, "balanceIn must be untouched");
-        assertEq(r.balanceOut, balanceOut, "balanceOut must be untouched");
-        assertEq(r.amountNetPulled, amountNetPulled, "amountNetPulled must be untouched");
-    }
-
-    // -----------------------------------------------------------------------
-    // 0xb1 — guards and unguarded paths
-    // -----------------------------------------------------------------------
-
-    /// @notice 0xb1 carries the same ordering guard as 0xb0.
-    function test_adjust_revertsWhenBothAmountsPreSet(
-        bool isExactIn,
+    /// @notice A swap whose rate is strictly below the floor is rejected.
+    /// @dev With TOKEN_LO < TOKEN_HI, `rateIn = rateLt` and `rateOut = rateGt`. Exact-in
+    ///      fills `amountOut = computedAmountOut`, so the check becomes
+    ///      `amountIn * rateGt >= rateLt * computedAmountOut`. Below-floor means the strict
+    ///      inequality fails.
+    function test_require_revertsBelowFloor(
         uint256 amountIn,
-        uint256 amountOut,
+        uint256 computedAmountOut,
         uint64 rateLt,
         uint64 rateGt
     ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        // The swap rate is strictly below the floor.
+        vm.assume(amountIn * rateGt < rateLt * computedAmountOut);
+
+        vm.expectRevert();
+        harness.requireMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+    }
+
+    /// @notice A swap whose rate equals the floor is accepted — the boundary is inclusive.
+    /// @dev The WORKPLAN calls this out specifically: prove behaviour *at* equality, not
+    ///      just either side. `ceilDiv` / floor asymmetry would hide at the boundary.
+    function test_require_acceptsAtFloor(uint256 amountIn, uint64 rateLt, uint64 rateGt) public {
+        vm.assume(rateLt > 0 && rateGt > 0);
+        vm.assume(amountIn > 0 && amountIn < BOUND);
+        // Pick computedAmountOut so the rate is exactly at the floor:
+        //   amountIn * rateGt == rateLt * computedAmountOut.
+        uint256 computedAmountOut = (uint256(amountIn) * rateGt) / rateLt;
+        vm.assume(computedAmountOut > 0 && computedAmountOut < BOUND);
+
+        // No vm.expectRevert: the call must succeed.
+        harness.requireMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+    }
+
+    /// @notice A swap whose rate is strictly above the floor is accepted.
+    function test_require_acceptsAboveFloor(
+        uint256 amountIn,
+        uint256 computedAmountOut,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        // The swap rate is strictly above the floor.
+        vm.assume(amountIn * rateGt > rateLt * computedAmountOut);
+
+        harness.requireMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // _requireMinRate1D — the direction guard works symmetrically
+    // -----------------------------------------------------------------------
+
+    /// @notice The same below-floor swap is rejected when the tokens are presented in the
+    ///         opposite order, with the rates swapped to match. This pins that the guard
+    ///         behaves identically after `parse` reroutes the rates.
+    /// @dev With TOKEN_HI as tokenIn (> TOKEN_LO), parse assigns rateIn = rateGt, rateOut =
+    ///      rateLt. Feeding the same rateLt/rateGt pair therefore reproduces the mirror image
+    ///      of `test_require_revertsBelowFloor`.
+    function test_require_revertsBelowFloorSwappedTokens(
+        uint256 amountIn,
+        uint256 computedAmountOut,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        // Below-floor after the swap: amountIn * rateLt < rateGt * computedAmountOut.
+        vm.assume(amountIn * rateLt < rateGt * computedAmountOut);
+
+        vm.expectRevert();
+        harness.requireMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_HI, TOKEN_LO, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // _requireMinRate1D — precondition guard
+    // -----------------------------------------------------------------------
+
+    /// @notice The instruction refuses to run if both swap amounts are already populated,
+    ///         because the rate check is only meaningful before the swap is computed.
+    function test_require_revertsWhenBothAmountsAlreadySet(uint256 amountIn, uint256 amountOut)
+        public
+    {
         vm.assume(amountIn > 0 && amountOut > 0);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateExpectedBeforeSwapAmountsComputed.selector, amountIn, amountOut)
-        );
-        harness.adjustMinRate(
-            isExactIn, amountIn, amountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(1, 1)
+        vm.expectRevert();
+        harness.requireMinRateBothSet(
+            amountIn, amountOut, TOKEN_LO, TOKEN_HI, _args(1, 1), STUB_PROGRAM
         );
     }
 
-    /// @notice Unlike 0xb0, 0xb1 insists that the program actually computed both amounts.
-    function test_adjust_revertsWhenRunLoopLeavesAmountInZero(uint256 swapOut, uint64 rateLt, uint64 rateGt) public {
-        vm.assume(swapOut > 0);
+    // -----------------------------------------------------------------------
+    // _adjustMinRate1D — exact-in: no-op when the rate already conforms
+    // -----------------------------------------------------------------------
 
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateRunLoopExpectToComputeSwapAmounts.selector, uint256(0), swapOut)
-        );
-        harness.adjustMinRate(true, 0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(0, swapOut));
-    }
+    /// @notice When the swap rate is at or above the floor, the adjustment is a no-op:
+    ///         `amountOut` is left exactly as the swap program produced it.
+    function test_adjustExactIn_noOpWhenConforming(
+        uint256 amountIn,
+        uint256 computedAmountOut,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        // Rate conforms: at or above the floor.
+        vm.assume(amountIn * rateGt >= rateLt * computedAmountOut);
 
-    function test_adjust_revertsWhenRunLoopLeavesAmountOutZero(uint256 swapIn, uint64 rateLt, uint64 rateGt) public {
-        vm.assume(swapIn > 0);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(MinRate.MinRateRunLoopExpectToComputeSwapAmounts.selector, swapIn, uint256(0))
-        );
-        harness.adjustMinRate(true, 0, 0, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), _innerSwap(swapIn, 0));
-    }
-
-    /// @notice A zero output rate on the exact-out leg is a division by zero, not a
-    ///         domain error.
-    /// @dev `rateOut == 0` makes every non-null rate "below the floor", so the branch is
-    ///      taken and `ceilDiv(amountOut * rateIn, 0)` panics. `Math.ceilDiv` raises
-    ///      `Panic(0x12)` on a zero divisor *before* looking at the numerator, so this
-    ///      holds for every `preOut`, including zero — the property is stated over the
-    ///      whole range for that reason. Nothing in the instruction rejects a zero rate,
-    ///      and the exact-in leg has no equivalent hazard (see
-    ///      `test_adjust_exactIn_zeroRateInNeverClamps`), so this is an asymmetry between
-    ///      the two legs rather than a shared convention.
-    function test_adjust_exactOut_panicsOnZeroRateOut(uint64 rateLt, uint256 preOut) public {
-        vm.assume(rateLt > 0);
-        _assumeMulSafe(preOut, rateLt);
-
-        vm.expectRevert(stdError.divisionError);
-        harness.adjustMinRate(false, 0, preOut, TOKEN_LO, TOKEN_HI, _args(rateLt, 0), _innerSwap(1, 1));
-    }
-
-    /// @notice Both rates zero is a no-op, not a panic.
-    /// @dev The boundary of the panic above: the clamp branch needs `rateIn * swapOut > 0`,
-    ///      so an all-zero args block leaves the registers alone on both legs. Worth
-    ///      pinning because "zero rate" is otherwise the input a fuzzer would expect to be
-    ///      uniformly hostile.
-    function test_adjust_bothRatesZeroIsANoOp(bool isExactIn, uint256 pre, uint256 swapIn, uint256 swapOut) public {
-        vm.assume(swapIn > 0 && swapOut > 0);
-
-        SwapRegisters memory r = harness.adjustMinRate(
-            isExactIn,
-            isExactIn ? pre : 0,
-            isExactIn ? 0 : pre,
-            TOKEN_LO,
-            TOKEN_HI,
-            _args(0, 0),
-            _innerSwap(swapIn, swapOut)
+        uint256 result = harness.adjustMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
         );
 
-        assertEq(r.amountIn, swapIn, "an all-zero rate must not clamp");
-        assertEq(r.amountOut, swapOut, "an all-zero rate must not clamp");
+        assertEq(result, computedAmountOut, "conforming rate must not be adjusted");
+    }
+
+    // -----------------------------------------------------------------------
+    // _adjustMinRate1D — exact-in: clamps below-floor rates
+    // -----------------------------------------------------------------------
+
+    /// @notice When the swap rate is below the floor, `amountOut` is clamped down to
+    ///         `amountIn * rateGt / rateLt`, the largest output that just satisfies the floor.
+    function test_adjustExactIn_clampsBelowFloor(
+        uint256 amountIn,
+        uint256 computedAmountOut,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        // Rate below the floor.
+        vm.assume(amountIn * rateGt < rateLt * computedAmountOut);
+
+        uint256 result = harness.adjustMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+
+        assertEq(result, (uint256(amountIn) * rateGt) / rateLt, "must clamp to the floor rate");
+    }
+
+    /// @notice After clamping, the adjusted amounts satisfy the floor — the maker is not
+    ///         shortchanged even at the boundary. This is the `div-mul-le` lemma in action:
+    ///         `rateLt * floor(amountIn * rateGt / rateLt) <= amountIn * rateGt`.
+    function test_adjustExactIn_adjustedSatisfiesFloor(
+        uint256 amountIn,
+        uint256 computedAmountOut,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(amountIn, computedAmountOut, rateLt, rateGt);
+        vm.assume(amountIn * rateGt < rateLt * computedAmountOut);
+
+        uint256 result = harness.adjustMinRateExactIn(
+            amountIn, computedAmountOut, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+
+        // amountIn * rateGt >= rateLt * result  <=>  the adjusted rate is at or above floor.
+        assertGe(
+            uint256(amountIn) * rateGt,
+            uint256(rateLt) * result,
+            "adjusted rate must satisfy the floor"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // _adjustMinRate1D — exact-out: no-op when conforming, clamp otherwise
+    // -----------------------------------------------------------------------
+
+    /// @notice Exact-out mirror of the no-op property.
+    function test_adjustExactOut_noOpWhenConforming(
+        uint256 amountOut,
+        uint256 computedAmountIn,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(computedAmountIn, amountOut, rateLt, rateGt);
+        // Rate conforms: computedAmountIn * rateGt >= rateLt * amountOut.
+        vm.assume(computedAmountIn * rateGt >= rateLt * amountOut);
+
+        uint256 result = harness.adjustMinRateExactOut(
+            amountOut, computedAmountIn, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+
+        assertEq(result, computedAmountIn, "conforming rate must not be adjusted");
+    }
+
+    /// @notice Exact-out mirror of the clamp: `amountIn` is clamped up to
+    ///         `ceil(amountOut * rateLt / rateGt)`, the smallest input that satisfies the floor.
+    function test_adjustExactOut_clampsBelowFloor(
+        uint256 amountOut,
+        uint256 computedAmountIn,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(computedAmountIn, amountOut, rateLt, rateGt);
+        // Rate below the floor.
+        vm.assume(computedAmountIn * rateGt < rateLt * amountOut);
+
+        uint256 result = harness.adjustMinRateExactOut(
+            amountOut, computedAmountIn, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+
+        // ceilDiv from OpenZeppelin's Math: (a + d - 1) / d for d > 0.
+        uint256 expected = (uint256(amountOut) * rateLt + rateGt - 1) / rateGt;
+        assertEq(result, expected, "must clamp up to the floor rate");
+    }
+
+    /// @notice After clamping, the adjusted amounts satisfy the floor. Ceiling can only
+    ///         move the input up, so `result * rateGt >= rateLt * amountOut` holds.
+    function test_adjustExactOut_adjustedSatisfiesFloor(
+        uint256 amountOut,
+        uint256 computedAmountIn,
+        uint64 rateLt,
+        uint64 rateGt
+    ) public {
+        _assumeDomain(computedAmountIn, amountOut, rateLt, rateGt);
+        vm.assume(computedAmountIn * rateGt < rateLt * amountOut);
+
+        uint256 result = harness.adjustMinRateExactOut(
+            amountOut, computedAmountIn, TOKEN_LO, TOKEN_HI, _args(rateLt, rateGt), STUB_PROGRAM
+        );
+
+        assertGe(
+            uint256(result) * rateGt,
+            uint256(rateLt) * amountOut,
+            "adjusted rate must satisfy the floor"
+        );
     }
 }

@@ -63,6 +63,56 @@ quantified over a sub-domain carved out by four assumptions; this form quantifie
 `uint256` triple, with reverting inputs satisfying it vacuously and covered separately by
 the dedicated revert tests. Prefer it whenever a property is only interesting on the
 success path.
+| Proof | Status |
+|---|---|
+| `XYCSwapSpec.setUp()` | PASSED |
+| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
+| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
+| `XYCSwapSpec.test_exactIn_cannotDrainPool` | pending |
+| `BalancesSpec.setUp()` | PASSED |
+| `BalancesSpec.test_assignmentOrderedByTokenAddress` | PASSED |
+| `BalancesSpec.test_swappingTokensSwapsRegisterAssignment` | PASSED |
+| `BalancesSpec.test_revertsUnlessBothIncomingBalancesZero` | PASSED |
+| `BalancesSpec.test_succeedsWithBothIncomingBalancesZero` | PASSED |
+| `BalancesSpec.test_zeroArgsIsNoOpWhenRegistersZero` | PASSED |
+| `BalancesSpec.test_equalTokensTakesElseBranch` | PASSED |
+| `BalancesSpec.test_oversizedArgsIgnoreTrailingBytes` | PASSED |
+| `BalancesSpec.test_finding_shortArgsNeverRevert` | PASSED |
+| everything else | not yet attempted |
+
+The two original passing proofs confirm the harness shape works end to end: an `internal pure`
+instruction, reached through an external harness that assembles `Context` in memory, is
+provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` is the first
+property that does, and so the first real test of the lemma library.
+
+The `BalancesSpec` set closes without new lemmas (Track A3): `_staticBalancesXD` does no
+arithmetic, only a `tokenIn < tokenOut` branch and two calldata word reads. All ten
+properties are now machine-checked, including the token-address ordering of the args and
+the zero-balance guard that rejects a second application. The proofs are slower than their
+lack of arithmetic suggests — but inspection of the KCFG shows the cost is symbolic-
+execution step count (~2.7k steps just for the harness/test machinery) plus KEVM server
+overhead, NOT a hard SMT goal: concrete-input proofs take ~12 min and the symbolic one
+only ~5 min more. So a `lemmas.k` simplification rule would not help here — the lever for
+Balances-style proofs is reducing executable steps (leaner harness) or the per-proof
+server cost, not discharging arithmetic. The lemmas library is the right tool for the
+Track B pricing instructions, where Z3 gets stuck on `X*Y <=Int C` with both operands
+symbolic; Balances has no such goal.
+
+The spec also documents a finding rather than a desired invariant: `parse` performs no
+length check on `args` (`Calldata.slice(32)` is unchecked assembly), so a short `args`
+does NOT revert — `balanceOut` silently reads the adjacent calldata. This is stated
+exhaustively, not just on examples: `test_finding_shortArgsNeverRevert(bytes calldata
+args)` assumes `args.length < 64` and proves the instruction never reverts for any such
+input (the read register values are nondeterministic adjacent-calldata garbage, so only
+the absence of a revert is asserted). The fix is a bounds check in `parse` (or the
+`slice(..., bytes4)` overload); if added, this test should flip to expect that revert.
+Whether short args are reachable depends on the dispatcher, which is out of scope for this
+instruction-level spec.
+
+Tightness note: the guard test pins the exact revert, not just that a revert occurs — it
+expects `SetBalancesExpectZeroBalances(incomingBalanceIn, incomingBalanceOut)` (the
+*incoming* register values, not the parsed `args` values). A bare `revert()`, an out-of-
+gas, or a different selector would all pass a loose `vm.expectRevert()` but fail here.
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
 instruction as verified until it appears above.
