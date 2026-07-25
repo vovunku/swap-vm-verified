@@ -1,5 +1,4 @@
-// STATUS: WRITTEN, NOT YET VERIFIED. The container was busy with review agents when this
-// was committed. It must be run before anything cites it, and axioms.md does not list it.
+// STATUS: PROVED. kprove returns #Top.
 module PRICING-EXACTOUT-SPEC
   imports SWAPVM
   imports SWAPVM-BYTES-LEMMAS

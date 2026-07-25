@@ -17,7 +17,7 @@ each one. See `PLAN.md` §5a for the model.
 |---|---|---|---|---|
 | `0x23` | `OnlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | `TESTED` | `InstructionConformance.t.sol` |
 | `0x90` | `StaticBalances` | `Balances.sol:37-47` | `TESTED` | `InstructionConformance.t.sol` (both orientations) |
-| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | `InstructionConformance.t.sol`; D-1 fixed |
+| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | K cases `revPrices`/`revRecompute`/`revRecomputeOut` + `InstructionConformance.t.sol` |
 
 ## DEFECT D-1 — FIXED. `0x53` diverged on reversed token order
 
@@ -117,6 +117,14 @@ revert arms, and the orientation branch — the reversed-order test asserted onl
 selector and passed under a full orientation flip. Six tests were added; one of them found
 defect D-1.
 
+**A mutation study qualified these markings and they should be read narrowly.** No Solidity
+test can kill a mutant in `swapvm.md` — those files import only from `src/` and have no
+coupling to the K semantics, so the Solidity column is structurally constant under mutation.
+Only the K case table and the proofs are mutation-sensitive. The K table now checks `amountOut`
+and covers the reversed branch, which closed the largest hole: before that, reintroducing D-1
+by removing the parentheses left the entire suite green. Verified by doing exactly that — it is
+now caught by `revPrices`.
+
 `TESTED` via `test/conformance/InstructionConformance.t.sol`, which routes opcodes to the
 **real instruction bodies** inherited from `Controls`, `Balances` and `LimitSwap` — only the
 dispatch table is ours, which is what the production VM generates anyway. No instruction logic
@@ -172,7 +180,7 @@ left-index rule existed.
 | Component | Implementation | State | Notes |
 |---|---|---|---|
 | fetch/decode/dispatch | `VM.sol:118-150` | `TESTED` | `opcode = shr(248,w)`, `argsLen = and(shr(240,w),0xff)`, `pc += 2 + argsLen` |
-| program-length bound | `VM.sol:142` | `TESTED` | reverts `RunLoopExceedProgramLength` when `pcs > length` |
+| program-length bound | `VM.sol:143` | `TESTED` | reverts `RunLoopExceedProgramLength` when `pcs > length` |
 
 Discharged by `semantics/conformance/run.sh` — five programs agree on final `pc` and revert
 status across both engines, plus six Solidity-side assertions on decoded opcodes and args
@@ -192,6 +200,7 @@ A theorem inherits the **weakest** state among the instructions it touches.
 |---|---|---|
 | `permissioned-swap-gate` | `0x23`, decode loop, bytes lemmas | `ADMITTED` |
 | `pricing-exact-in-is-the-floor` (T1) | `0x23`, `0x90`, `0x53`, decode loop, bytes lemmas | `ADMITTED` |
+| `pricing-exact-out-is-the-ceiling` (T2) | same | `ADMITTED` — **PROVED**, `kprove` `#Top` |
 
 **T1 PROVED** (`kprove` returns `#Top`) — `semantics/proofs/pricing-spec.k`. Runs the whole
 three-instruction program with `amountIn` and both maker reserves **symbolic**, and pins the

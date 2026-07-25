@@ -7,7 +7,7 @@ not discoverable from the filenames — hence this file.
 |---|---|---|
 | `gate-spec.k` | **`#Top`** | **T0** — for any program starting `0x23 0x14 G` with an arbitrary symbolic tail, a taker holding zero `G` ends `Reverted("TakerTokenBalanceIsZero")` |
 | `pricing-spec.k` | **`#Top`** | **T1** — exact-in is exactly `floor(amountIn * balanceOut / balanceIn)` |
-| `pricing-exactout-spec.k` | **`#Top`** | **T2** — exact-out is exactly the ceiling. **UNVERIFIED — not yet run** |
+| `pricing-exactout-spec.k` | **`#Top`** | **T2** — exact-out is exactly the ceiling |
 | `negative-control.k` | **FAIL** | Same program as T0, balance **non-zero**, asserting the same revert |
 | `pricing-negative-control.k` | **FAIL** | T1 with the maker-safety inequality reversed |
 | `control-sensitivity.k` | **`#Top`** | The control's twin: same premises, correct conclusion |

@@ -102,7 +102,7 @@ contract RunLoopConformanceTest is Test {
     }
 
     /// @notice Truncating the last byte trips the bound check.
-    /// @dev K side: `Reverted("RunLoopExceedProgramLength")` with `<pc>` stopped at 88 — the
+    /// @dev K side: `Reverted("RunLoopExceedProgramLength")` with `<pc>` advanced to 91 — past the
     ///      start of the `LimitSwap` header, whose declared 1 byte of args now runs past the
     ///      end. The loop must refuse to read out of bounds rather than truncate silently.
     function test_conformance_truncatedProgramReverts() public {

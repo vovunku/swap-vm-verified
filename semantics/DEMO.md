@@ -144,7 +144,7 @@ exist. It runs the **real** `ContextLib.runLoop` and the **real** instruction bo
 from `Controls`, `Balances` and `LimitSwap` — only the dispatch table is ours, which is what
 the production VM generates anyway.
 
-Current: 19 Solidity tests, 6 K conformance cases, all agreeing.
+Current: 21 Solidity tests, 11 K conformance cases. Note what the K table compares — final `pc`, revert status and `amountOut`. It is not a full differential harness; revert *reasons* and other registers are not compared between engines.
 
 ## 5a. Coverage: 3 of 52 opcodes
 
@@ -160,8 +160,7 @@ program, three instructions* — a demonstrator for the method, not coverage of 
 
 ## 6. Known gaps, stated plainly
 
-- **The SDK mismatch** (§1). Unresolved whether the SDK targets Aqua deployments, this fork has
-  diverged, or it is a real bug. Worth resolving before anyone builds on this.
+- **The SDK mismatch** (§1). **Resolved: the published SDK targets a different swap-vm version.** Its opcode table is a dense 46-entry list — `onlyTakerTokenBalanceNonZero` is `0x0e` there and `0x23` here — so an SDK-emitted program shares not one byte with this one. Worth resolving before anyone builds on this.
 - **Malformed argument lengths.** Solidity right-zero-pads and truncates without reverting; the
   K rules require exact lengths and now revert `UNMODELLED-ARGS-LENGTH` rather than silently
   no-opping. Loud, but not yet faithful.

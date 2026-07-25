@@ -104,7 +104,7 @@ so byte `pc` is the opcode and byte `pc+1` is the length. Termination is `while 
     requires PC >=Int lengthBytes(PGM)
 ```
 
-The bound check is `VM.sol:142` — `if (pcs > length) revert RunLoopExceedProgramLength`.
+The bound check is `VM.sol:143` — `if (pcs > length) revert RunLoopExceedProgramLength`.
 It fires *after* `pcs` has advanced past the args, so an instruction whose declared args run
 off the end reverts rather than reading out of bounds. Two ways to trip it: the two-byte
 header itself does not fit, or the args do not.

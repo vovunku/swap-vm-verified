@@ -1,6 +1,6 @@
 # SwapVM formal semantics — plan
 
-**Status: PLAN ONLY. No implementation has started.**
+**Status: Phases 0-2 implemented.** See `PHASE1.md`, `PHASE2.md`, `DEMO.md` for what was built and `axioms.md` for the trust ledger. This file records the design decisions, which still hold.
 
 Deliberately separate from the verification work in `test/kontrol/`. Nothing here depends on
 that work and nothing there depends on this. They meet at exactly one seam, Phase R.
@@ -247,7 +247,7 @@ A theorem's status improves automatically as its dependencies do.
 This is a smaller and more honest trust base than the status quo, which is worth stating
 plainly: `test/kontrol/` currently rests on **68 simplification rules** — one with real firing
 evidence, four dead for their entire life, none tracked — and yields no program-level results
-at all. Eighteen enumerable, individually dischargeable claims is a strict improvement, even
+at all. A dozen-odd enumerable, individually dischargeable claims is a strict improvement, even
 while every one of them is admitted.
 
 **Negative control.** Keep a small set of statements known to be FALSE and assert they fail to
