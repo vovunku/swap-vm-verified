@@ -27,49 +27,48 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 
 ---
 
-## Summary — 11 of 91 Track B properties proven
+## Summary — 14 of 126 Track B properties proven
 
 *Counting highest version only, against the definition built after the `preserves-definedness`
-fix.*
+fix, the performance config change, and the `isqrt` seam.*
 
-| Spec | Properties | Proven | Attempted | Notes |
-|---|---|---|---|---|
-| XYCSwap | 12 | 5 | 8 | Strengthened 8→12; 4 new awaiting a rebuild |
-| PeggedSwap | 31 | 1 | 8 | 19 need `--reinit` after the immutable fix |
-| XYCConcentrate | 21 | 1 | 3 | Tier B needs `mul512` **and** an `isqrt` seam |
-| PiecewiseLinearScale | 31 | 4 | 8 | `--bmc-depth 51` gives a complete result |
-| Power | 31 | 0 | 0 | Spec written, awaiting first rebuild |
-| **Track B total** | **126** | **11** | **27** | |
+| Spec | Properties | Proven | Notes |
+|---|---|---|---|
+| XYCSwap | 12 | 6 | 4 new properties now in the definition, unattempted |
+| PiecewiseLinearScale | 31 | 6 | `--bmc-depth 51` gives a complete result |
+| PeggedSwap | 38 | 1 | +7 seam properties; 19 need `--reinit` |
+| XYCConcentrate | 21 | 1 | Tier B gated on `mul512`, now un-dead |
+| Power | 31 | 0 | In the definition for the first time |
+| **Track B total** | **133** | **14** | |
 
-Track A, out of scope, listed for completeness: `LimitSwap` 9 (4 attempted, 0 proven),
-`MinRate` 29, `BaseFeeAdjuster` 25.
+Track A, out of scope: `LimitSwap` 9, `MinRate` 29, `BaseFeeAdjuster` 25.
 
 ### Proven at latest version
 
 | Property | Ver |
 |---|---|
-| `PeggedSwapSpec.test_panicSelectorIsTheAbiPanicSelector` | :0 |
+| `PeggedSwapSpec.test_panicSelectorIsTheAbiPanicSelector` | :1 |
 | `PiecewiseLinearScaleSpec.test_argsLength_tenBytesTerminates` | :0 |
 | `PiecewiseLinearScaleSpec.test_guard_precedesArgumentParsing` | :0 |
 | `PiecewiseLinearScaleSpec.test_guard_scaleInRevertsWhenBothAmountsSet` | :0 |
+| `PiecewiseLinearScaleSpec.test_guard_scaleOutRevertsWhenBothAmountsSet` | :0 |
+| `PiecewiseLinearScaleSpec.test_scaleIn_zeroBalanceStaysZero` | :0 |
 | `PiecewiseLinearScaleSpec.test_value_maximalScaleIsTheIdentity` | :0 |
 | `XYCConcentrateSpec.test_exactIn_clampIsReachable_witness` | :0 |
+| `XYCSwapSpec.test_exactIn_constantProductNeverDecreases` | :2 |
 | `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | :1 |
 | `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceOut` | :2 |
 | `XYCSwapSpec.test_exactIn_revertsWhenAmountOutAlreadySet` | :2 |
 | `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | :2 |
 | `XYCSwapSpec.test_exactOut_roundsInFavourOfMaker` | :2 |
 
-`test_exactOut_roundsInFavourOfMaker` is the first property closed by a lemma we wrote — the
-`ceilDiv → up/Int` normalisation in Section 5, and it needed nothing else.
+`test_exactOut_roundsInFavourOfMaker` is the first property closed by a rule we wrote — the
+`ceilDiv → up/Int` normalisation — and it needed nothing else.
 
-### Attempted but not yet closed
-
-`XYCSwapSpec`: `cannotDrainPool` (:4), `roundsInFavourOfMaker` (:3),
-`constantProductNeverDecreases` (:1 — **was PASSED at :0, superseded**).
-`PeggedSwapSpec`: 7 pending including both `knownUnderflow`/`knownOverflow` witnesses.
-`XYCConcentrateSpec`: `cannotDrainPool`, `partialFillNeverChargesMoreThanOffered`.
-`PiecewiseLinearScaleSpec`: `scaleNeverExpands`, both `unscale*`, `guard_scaleOut*`.
+**A retracted regression, worth recording as a method note.** `constantProductNeverDecreases`
+was reported regressed because its `:1` sat PENDING. It had not regressed: `:1` was a stale
+intermediate and the live `:2` closed. Reading a PENDING intermediate as the current state is
+the trap; only the highest-numbered version describes the live definition.
 
 ## Per-spec notes
 
