@@ -211,13 +211,13 @@ the `XYCSwap` shape.
 
 ### `PeggedSwap` — abstract `Math.sqrt` or do not start
 
-`Math.sqrt` is called four times per path. Each call has 7 data-dependent branches for the
+`Math.sqrt` is called *at most* four times per path -- when `linearWidth == 0`, `PeggedSwapMath.solve` returns at `:64-68` before its `Math.sqrt`, so those paths have three. Each call has 7 data-dependent branches for the
 MSB estimate (up to 128 paths) and 6 unrolled Newton steps, each a `DIV` with both operands
 symbolic. Four of them compose to ~2^28 paths. This is not a `max-depth` tuning problem.
 
 Replace `Math.sqrt` with an uninterpreted function plus characterising axioms —
 `isqrt(A)² ≤ A`, `A < (isqrt(A)+1)²`, monotonicity, `isqrt(N²) = N` — and never let KEVM
-descend into the body. The last axiom alone discharges the dead-code proof above.
+descend into the body. The last axiom alone does NOT discharge the dead-code proof above -- monotonicity is also needed, to get from `discriminant*ONE >= ONE*ONE` to `isqrt(discriminant*ONE) >= ONE`. Corrected; the earlier statement in this file is the accurate one.
 
 Staging: prove all divisors non-zero first (it removes partiality guards from every later
 goal), then the cheap guard properties against real bytecode, then build the sqrt-abstracted

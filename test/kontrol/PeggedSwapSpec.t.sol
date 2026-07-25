@@ -1274,4 +1274,305 @@ contract PeggedSwapSpec is Test {
         assertEq(regs.amountOut, 1e18, "the requested output is below the balance and must not be clamped");
         assertGe(regs.amountIn, 1, "a non-zero fill must cost at least one wei in");
     }
+
+    // =======================================================================
+    // 9. The `isqrt` seam
+    //
+    //    `PeggedSwapHarness` Surface 2 (`seamExactIn`/`seamExactOut`) is the same
+    //    instruction with each of the four `Math.sqrt(z)` call sites replaced by
+    //    `_isqrt(z, w)`, which checks a caller-supplied witness `w` against
+    //
+    //        w * w <= z   and   z < (w + 1) * (w + 1)
+    //
+    //    instead of computing a root. Those two inequalities characterise
+    //    `floor(sqrt(z))` uniquely, so the seam accepts exactly one witness per radicand;
+    //    under Kontrol they land in the path condition as symbolic-square comparisons,
+    //    which is the shape `lemmas.k` Section 7 (`sq-monotonic`, `sq-monotonic-strict`,
+    //    `sq-no-overflow`) was written for, and `Math.sqrt`'s ~128-path body never runs.
+    //
+    //    TRUST BOUNDARY. Section 9a states the two `deadCode` properties of section 7 over
+    //    the seam. They are theorems about the transcription, conditional on OZ's
+    //    `Math.sqrt` returning `floor(sqrt(·))`. Section 9b is the discharge: it feeds
+    //    `seamExactIn` the witnesses the real `Math.sqrt` produces and asserts the seam and
+    //    the instruction agree register-for-register and revert-for-revert. Read 9a as
+    //    conditional on 9b, and 9b as a *fuzz* discharge only — it calls the real
+    //    `Math.sqrt` by construction and is as expensive symbolically as the unseamed
+    //    instruction, so it must not be included in a `kontrol prove` run.
+    //
+    //    See `PeggedSwapHarness.sol`, "Surface 2", for why the witnesses are parameters
+    //    rather than `vm.randomUint()` draws, and `analysis/SPEC-DESIGN.md` §2.6-2.7.
+    // =======================================================================
+
+    function _trySeamExactIn(
+        uint256 balanceIn,
+        uint256 balanceOut,
+        uint256 amountIn,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        bytes memory args
+    )
+        internal
+        view
+        returns (bool ok, bytes memory err, SwapRegisters memory regs)
+    {
+        try harness.seamExactIn(
+            balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, witnessU, witnessV, witnessMid, witnessDisc, args
+        ) returns (SwapRegisters memory r) {
+            return (true, "", r);
+        } catch (bytes memory e) {
+            return (false, e, regs);
+        }
+    }
+
+    function _trySeamExactOut(
+        uint256 balanceIn,
+        uint256 balanceOut,
+        uint256 amountOut,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        bytes memory args
+    )
+        internal
+        view
+        returns (bool ok, bytes memory err, SwapRegisters memory regs)
+    {
+        try harness.seamExactOut(
+            balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, witnessU, witnessV, witnessMid, witnessDisc, args
+        ) returns (SwapRegisters memory r) {
+            return (true, "", r);
+        } catch (bytes memory e) {
+            return (false, e, regs);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 9a. Group E over the seam — the intended proof targets
+    // -----------------------------------------------------------------------
+
+    /// @notice `PeggedSwapMathNoSolution` is unreachable, stated over the seam.
+    /// @dev The seamed form of `test_deadCode_noSolutionIsUnreachable_exactIn`. The proof
+    ///      the seam is meant to enable: `discriminant = ONE + fourARightSide >= ONE`, so
+    ///      the witness `w` at the `solve` site satisfies
+    ///      `w * w <= discriminant * ONE` and `discriminant * ONE < (w + 1) * (w + 1)`;
+    ///      if `w < ONE` then `(w + 1) * (w + 1) <= ONE * ONE <= discriminant * ONE`,
+    ///      contradiction. That is `sq-monotonic` applied with a concrete right operand.
+    ///
+    ///      Vacuous under `forge test` — a fuzzed witness is rejected by the seam and the
+    ///      revert carries `PeggedSwapHarnessSqrtWitness*`, not `PeggedSwapMathNoSolution`.
+    ///      Under Kontrol the accepting branch is a genuine obligation, which is the point.
+    function test_seam_deadCode_noSolutionIsUnreachable_exactIn(
+        uint256 balanceIn,
+        uint256 balanceOut,
+        uint256 amountIn,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        bytes calldata args
+    )
+        public
+        view
+    {
+        (bool ok, bytes memory err,) =
+            _trySeamExactIn(balanceIn, balanceOut, amountIn, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        if (!ok) {
+            assertTrue(_selectorOf(err) != _selNoSolution(), "PeggedSwapMathNoSolution must be unreachable");
+        }
+    }
+
+    /// @notice Same, on the exact-out leg.
+    function test_seam_deadCode_noSolutionIsUnreachable_exactOut(
+        uint256 balanceIn,
+        uint256 balanceOut,
+        uint256 amountOut,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        bytes calldata args
+    )
+        public
+        view
+    {
+        (bool ok, bytes memory err,) =
+            _trySeamExactOut(balanceIn, balanceOut, amountOut, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        if (!ok) {
+            assertTrue(_selectorOf(err) != _selNoSolution(), "PeggedSwapMathNoSolution must be unreachable");
+        }
+    }
+
+    /// @notice `PeggedSwapMathInvalidInput` is unreachable, stated over the seam.
+    /// @dev The seamed form of `test_deadCode_invalidInputIsUnreachable_exactOut`, and the
+    ///      property that most needs the witnesses to be *nameable*: it is a statement
+    ///      relating two different sqrt call sites. With `v1 <= v` from the `:196` clamp,
+    ///      `witnessMid * witnessMid <= v1 * ONE <= v * ONE < (witnessV + 1) * (witnessV + 1)`,
+    ///      so `witnessMid <= witnessV` by `sq-monotonic-strict`, and hence
+    ///      `invariantV1 <= targetInvariant` since the linear terms are ordered by
+    ///      `div-monotonic` (`lemmas.k` Section 4).
+    function test_seam_deadCode_invalidInputIsUnreachable_exactOut(
+        uint256 balanceIn,
+        uint256 balanceOut,
+        uint256 amountOut,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        bytes calldata args
+    )
+        public
+        view
+    {
+        (bool ok, bytes memory err,) =
+            _trySeamExactOut(balanceIn, balanceOut, amountOut, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        if (!ok) {
+            assertTrue(_selectorOf(err) != _selInvalidInput(), "PeggedSwapMathInvalidInput must be unreachable");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 9b. The differential — discharge of the seam's trust boundary
+    //
+    //     FUZZ ONLY. Never add these to a `kontrol prove` run: they call the real
+    //     `Math.sqrt` four times through `witnesses*` and again through `exactIn`/
+    //     `exactOut`, which is the path explosion the seam exists to avoid.
+    // -----------------------------------------------------------------------
+
+    /// @notice The seam, fed the witnesses the real `Math.sqrt` produces, is the real
+    ///         instruction — register for register, and revert for revert.
+    ///
+    /// @dev Follows `XYCConcentrateSpec`'s `test_diff_*` shape (`SPEC-DESIGN.md` §2.7):
+    ///
+    ///        1. every register compared, not just `amountOut` — the drain branch at
+    ///           `PeggedSwap.sol:179` rewrites `amountIn`, and `balanceIn`/`balanceOut`/
+    ///           `amountNetPulled` must be shown untouched by the transcription too;
+    ///        2. the seam call sits *outside* the `try`, so a rejection of a witness the
+    ///           recorder just produced is a test failure, not a skipped sample — that is
+    ///           the completeness half of "the seam accepts exactly `floor(sqrt(·))`";
+    ///        3. when the recorder reverts the instruction must revert with the same
+    ///           selector, which is how the shared `Panic(0x11)` and guard paths are covered.
+    ///
+    ///      Domain: the nominal pool of `test_nominalPool_exactInSuccessPath`, so the
+    ///      success path is actually reached — over unconstrained `args` the recorder would
+    ///      revert in `parse` on virtually every sample and the property would degenerate
+    ///      into selector agreement. `drain` picks between the two exact-in branches for
+    ///      the same reason it does there.
+    function test_diff_seamMatchesInstruction_exactIn(
+        bool drain,
+        uint256 balanceInSeed,
+        uint256 balanceOutSeed,
+        uint256 amountInSeed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        public
+        view
+    {
+        uint256 balanceIn = _nominalBalance(balanceInSeed);
+        uint256 balanceOut = _nominalBalance(balanceOutSeed);
+        uint256 rateLt = _nominalRate(rateLtSeed);
+        uint256 rateGt = _nominalRate(rateGtSeed);
+        uint256 amountIn = drain ? 8 * balanceIn : (amountInSeed > balanceIn ? balanceIn : amountInSeed);
+        bytes memory args = _args(balanceIn * rateLt, balanceOut * rateGt, _validWidth(widthSeed), rateLt, rateGt);
+
+        (bool okReal, bytes memory errReal, SwapRegisters memory expected) =
+            _tryExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args);
+
+        try harness.witnessesExactIn(balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, args) returns (
+            uint128 witnessU, uint128 witnessV, uint128 witnessMid, uint128 witnessDisc
+        ) {
+            assertTrue(okReal, "the transcription priced where the instruction reverted");
+
+            SwapRegisters memory actual = harness.seamExactIn(
+                balanceIn, balanceOut, amountIn, TOKEN_LO, TOKEN_HI, witnessU, witnessV, witnessMid, witnessDisc, args
+            );
+
+            assertEq(actual.amountIn, expected.amountIn, "seam and instruction must agree on amountIn");
+            assertEq(actual.amountOut, expected.amountOut, "seam and instruction must agree on amountOut");
+            assertEq(actual.balanceIn, expected.balanceIn, "seam and instruction must agree on balanceIn");
+            assertEq(actual.balanceOut, expected.balanceOut, "seam and instruction must agree on balanceOut");
+            assertEq(
+                actual.amountNetPulled, expected.amountNetPulled, "seam and instruction must agree on amountNetPulled"
+            );
+        } catch (bytes memory errSeam) {
+            assertFalse(okReal, "the transcription reverted where the instruction priced");
+            assertTrue(_selectorOf(errSeam) == _selectorOf(errReal), "seam and instruction must fail identically");
+        }
+    }
+
+    /// @notice Same, on the exact-out leg.
+    function test_diff_seamMatchesInstruction_exactOut(
+        uint256 balanceInSeed,
+        uint256 balanceOutSeed,
+        uint256 amountOut,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        public
+        view
+    {
+        uint256 balanceIn = _nominalBalance(balanceInSeed);
+        uint256 balanceOut = _nominalBalance(balanceOutSeed);
+        uint256 rateLt = _nominalRate(rateLtSeed);
+        uint256 rateGt = _nominalRate(rateGtSeed);
+        bytes memory args = _args(balanceIn * rateLt, balanceOut * rateGt, _validWidth(widthSeed), rateLt, rateGt);
+
+        (bool okReal, bytes memory errReal, SwapRegisters memory expected) =
+            _tryExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args);
+
+        try harness.witnessesExactOut(balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, args) returns (
+            uint128 witnessU, uint128 witnessV, uint128 witnessMid, uint128 witnessDisc
+        ) {
+            assertTrue(okReal, "the transcription priced where the instruction reverted");
+
+            SwapRegisters memory actual = harness.seamExactOut(
+                balanceIn, balanceOut, amountOut, TOKEN_LO, TOKEN_HI, witnessU, witnessV, witnessMid, witnessDisc, args
+            );
+
+            assertEq(actual.amountIn, expected.amountIn, "seam and instruction must agree on amountIn");
+            assertEq(actual.amountOut, expected.amountOut, "seam and instruction must agree on amountOut");
+            assertEq(actual.balanceIn, expected.balanceIn, "seam and instruction must agree on balanceIn");
+            assertEq(actual.balanceOut, expected.balanceOut, "seam and instruction must agree on balanceOut");
+            assertEq(
+                actual.amountNetPulled, expected.amountNetPulled, "seam and instruction must agree on amountNetPulled"
+            );
+        } catch (bytes memory errSeam) {
+            assertFalse(okReal, "the transcription reverted where the instruction priced");
+            assertTrue(_selectorOf(errSeam) == _selectorOf(errReal), "seam and instruction must fail identically");
+        }
+    }
+
+    /// @notice The seam prices the realistic pool identically to the instruction, and does
+    ///         so on the branch where all four sqrt sites are live.
+    /// @dev The anti-vacuity anchor for section 9, and the companion to
+    ///      `test_exactOut_realisticPoolPricesCleanly`. Fully concrete on both sides, so it
+    ///      costs the prover nothing and can be included in a `kontrol prove` run as a
+    ///      cheap check that the seam is wired up — `linearWidth = 100e27 != 0`, so `solve`
+    ///      runs its `Math.sqrt` and `witnessDisc` is genuinely exercised.
+    function test_seam_realisticPoolMatchesInstruction() public view {
+        bytes memory args = _args(1e21, 1e21, 100e27, 1, 1);
+
+        (uint128 witnessU, uint128 witnessV, uint128 witnessMid, uint128 witnessDisc) =
+            harness.witnessesExactOut(1e21, 1e21, 1e18, TOKEN_LO, TOKEN_HI, args);
+
+        assertTrue(witnessDisc != 0, "the solve-site witness must be exercised at a non-zero linear width");
+
+        SwapRegisters memory actual = harness.seamExactOut(
+            1e21, 1e21, 1e18, TOKEN_LO, TOKEN_HI, witnessU, witnessV, witnessMid, witnessDisc, args
+        );
+
+        (bool ok,, SwapRegisters memory expected) = _tryExactOut(1e21, 1e21, 1e18, TOKEN_LO, TOKEN_HI, args);
+
+        assertTrue(ok, "a realistic pegged pool must price without reverting");
+        assertEq(actual.amountIn, expected.amountIn, "seam and instruction must agree on amountIn");
+        assertEq(actual.amountOut, expected.amountOut, "seam and instruction must agree on amountOut");
+    }
 }
