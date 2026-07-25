@@ -12,7 +12,7 @@ module GATE-SPEC
   claim <k> #run => .K </k>
         <program> b"\x23\x14" +Bytes Int2Bytes(20, G, BE) +Bytes TAIL </program>
         <pc> 0 => 22 </pc>
-        <balanceIn> 0 </balanceIn> <balanceOut> 0 </balanceOut>
+        <balanceIn> _ </balanceIn> <balanceOut> _ </balanceOut>
         <amountIn> _ </amountIn> <amountOut> _ </amountOut>
         <netPulled> _ </netPulled>
         <isExactIn> _ </isExactIn>
@@ -24,6 +24,11 @@ module GATE-SPEC
         <trace> _ </trace>
     requires 0 <=Int G andBool G <Int (2 ^Int 160)
      andBool #balanceOf(BALS, G, TAKER) ==Int 0
+     // NOT decorative -- do not delete. It excludes no Bytes value semantically, but the
+     // backend needs it: once `lengthBytes(B1 +Bytes B2)` rewrites the program length to
+     // `22 +Int lengthBytes(TAIL)`, there is no axiom making `lengthBytes` non-negative, so
+     // without this the prover takes the `PC >= length` termination branch and the proof
+     // gets stuck at <pc> 0. Verified by deleting it.
      andBool lengthBytes(TAIL) >=Int 0
 
 endmodule

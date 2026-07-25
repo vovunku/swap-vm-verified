@@ -62,8 +62,18 @@ Byte budget: `22 + 66 + 3 = 91`.
 Not about this instance. About every program that starts this way:
 
 > For any program `P = 0x23 0x14 G ++ TAIL`, where `G` is a 20-byte address and `TAIL` is an
-> arbitrary byte string, execution with a taker holding zero balance of `G` never reaches
-> `<status> Settled`.
+> arbitrary byte string, execution with a taker holding zero balance of `G` ends in
+> `Reverted("TakerTokenBalanceIsZero")`.
+
+**Corrected.** This previously read "never reaches `<status> Settled`", which was **vacuously
+true**: no rule in the semantics ever produces `Settled`, so that claim also holds of the empty
+program. The statement above is what `proofs/gate-spec.k` actually proves, and it is strictly
+stronger.
+
+**The `0x14` length byte is load-bearing.** The Solidity gate accepts *any* args length —
+`address(bytes20(args))` right-zero-pads short args and truncates long ones, with no check — so
+a program with a different length byte is a different case. A family stated without pinning
+`0x14` would not be covered by this theorem.
 
 `TAIL` stays **symbolic**. That is what makes this worth more than the scenario tests in
 `test/invariants/`, which can only sample particular tails — and it is the shape of claim

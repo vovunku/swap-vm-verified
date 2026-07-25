@@ -7,6 +7,12 @@
 # so both engines do nothing per instruction and only the loop is under test.
 #
 # Conformance is EVIDENCE ON THESE INPUTS, not proof. See semantics/PLAN.md §5a.
+#
+# HONEST LIMITATION: this does not diff the two engines against each other. Each side is
+# checked against expectations written independently -- the table below for K, and the
+# assertions in test/conformance/*.t.sol for Solidity. Those expectations were derived from
+# each other by hand, so a shared mistake would pass both. A true differential harness would
+# extract registers from both and compare them mechanically; this is weaker than that.
 set -euo pipefail
 
 CONTAINER=${CONTAINER:-kontrol}
@@ -14,31 +20,40 @@ REMOTE=${REMOTE:-/home/user/sem}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
-# program label : K Bytes literal : expected pc : expected status
+# program label : K Bytes literal : expected pc : expected status : extra krun config
+#
+# The catalogue case must supply a non-zero gate balance, or the gate reverts at pc 22 and the
+# case is testing the gate rather than the loop. This bit me: repairing the missing config
+# variables made the case fail, because the expectation had been recorded from a run with a
+# balance set while the script passed none.
 CASES=(
-  'catalogue:b"\x23\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xaa\x90\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x36\x35\xc9\xad\xc5\xde\xa0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x6c\x6b\x93\x5b\x8b\xbd\x40\x00\x00\x53\x01\x01":91:Running'
-  'loneOpcode:b"\x53":2:Reverted'
-  'argsOverrun:b"\x53\x40":66:Reverted'
-  'empty:b"":0:Running'
-  'zeroArg:b"\x50\x00":2:Running'
+  'catalogue;b"\x23\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xaa\x90\x40\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x36\x35\xc9\xad\xc5\xde\xa0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x6c\x6b\x93\x5b\x8b\xbd\x40\x00\x00\x53\x01\x01";91;Running;bal(170,4660) |-> 5'
+  'gateRejects;b"\x23\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xaa";22;Reverted;.Map'
+  'loneOpcode;b"\x53";2;Reverted;.Map'
+  'argsOverrun;b"\x53\x40";66;Reverted;.Map'
+  'empty;b"";0;Running;.Map'
+  'zeroArg;b"\x50\x00";2;Running;.Map'
 )
 
 echo "== K side =="
 fail=0
 for c in "${CASES[@]}"; do
-  label="${c%%:*}"; rest="${c#*:}"
-  lit="${rest%:*:*}"; rest="${rest#*:}"
-  want_pc="${rest%:*}"; want_st="${rest#*:}"
+  IFS=';' read -r label lit want_pc want_st bals <<< "$c"
 
   printf '%s' "$lit" > /tmp/_conf_lit.txt
   docker cp -q /tmp/_conf_lit.txt "$CONTAINER:$REMOTE/_conf_lit.txt" 2>/dev/null || \
     docker cp /tmp/_conf_lit.txt "$CONTAINER:$REMOTE/_conf_lit.txt" >/dev/null
   docker exec "$CONTAINER" chown user:user "$REMOTE/_conf_lit.txt"
 
+  # Phase 1 added six more configuration variables. Passing only $PGM makes krun fail with
+  # "Configuration variable missing", which is how this script silently stopped working.
   out=$(docker exec "$CONTAINER" bash -c \
-      "cd $REMOTE && su user -c 'PATH=/usr/bin:/bin krun --definition swapvm-llvm -cPGM=\$(cat _conf_lit.txt)'" 2>&1)
+      "cd $REMOTE && su user -c 'PATH=/usr/bin:/bin krun --definition swapvm-llvm \
+         -cPGM=\$(cat _conf_lit.txt) \
+         -cTAKER=4660 -cTOKENIN=1 -cTOKENOUT=2 \
+         -cAMOUNTIN=0 -cAMOUNTOUT=0 -cEXACTIN=true -cBALANCES=.Map'" 2>&1)
   pc=$(echo "$out"  | sed -n '/<pc>/,/<\/pc>/p'         | tr -d '\n <>/pc' | tr -d ' ')
-  st=$(echo "$out"  | sed -n '/<status>/,/<\/status>/p' | grep -oE 'Running|Reverted' | head -1)
+  st=$(echo "$out"  | sed -n '/<status>/,/<\/status>/p' | grep -oE 'Running;Reverted' | head -1)
 
   if [ "$pc" = "$want_pc" ] && [ "$st" = "$want_st" ]; then
     printf '  %-14s pc=%-4s %-9s OK\n' "$label" "$pc" "$st"

@@ -152,4 +152,104 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap {
         assertEq(o.amountIn, 2, "ceilDiv(3 * 1000e18, 2000e18) == 2, not 1");
         assertEq(o.amountOut, 3, "amountOut unchanged on exact-out");
     }
+
+    // -----------------------------------------------------------------------
+    // Gaps found by mutation testing. Each of these was added because a
+    // deliberate break in the K semantics survived the original suite.
+    // -----------------------------------------------------------------------
+
+    /// @dev Same layout, arbitrary balances and direction byte.
+    function _programWith(address gate, uint256 balA, uint256 balB, bytes1 dirLt)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return bytes.concat(
+            hex"2314", bytes20(gate),
+            hex"9040", bytes32(balA), bytes32(balB),
+            hex"5301", dirLt
+        );
+    }
+
+    /// @notice Exact-in FLOORS. The original suite could not tell floor from ceiling.
+    /// @dev The catalogue program divides exactly — `1e18 * 2000e18 / 1000e18 = 2e18` — so
+    ///      changing `limitQuoteOut` to a ceiling survived every test. `LimitSwap.sol:49`
+    ///      calls floor "desired behavior": it is a maker-favouring rounding decision and was
+    ///      completely unconstrained on both sides.
+    ///
+    ///      Balances 3/2 with `amountIn = 1`: floor(1*2/3) = 0, ceiling would give 1.
+    function test_conformance_exactInFloorsNotCeils() public {
+        gateToken.setBalance(TAKER, 5);
+
+        Outcome memory o =
+            this.runProgram(_programWith(address(gateToken), 3, 2, 0x01), TAKER, TOKEN_LO, TOKEN_HI, 1, 0, true);
+
+        assertEq(o.amountOut, 0, "floor(1 * 2 / 3) == 0; a ceiling would give 1");
+    }
+
+    /// @notice Reversed order genuinely swaps the balance pair.
+    /// @dev The existing reversed-order test only asserts a revert selector, so it passes even
+    ///      with the orientation flipped. This one completes — direction byte `0x00` matches
+    ///      `tokenIn > tokenOut` — and asserts the registers, which is the only way to pin
+    ///      which balance went where.
+    function test_conformance_reversedOrientationAssignsBalances() public {
+        gateToken.setBalance(TAKER, 5);
+
+        Outcome memory o = this.runProgram(
+            _programWith(address(gateToken), 1000e18, 2000e18, 0x00), TAKER, TOKEN_HI, TOKEN_LO, 1e18, 0, true
+        );
+
+        assertEq(o.balanceIn, 2000e18, "tokenIn > tokenOut: args pair is SWAPPED");
+        assertEq(o.balanceOut, 1000e18, "swapped");
+        assertEq(o.amountOut, 0.5e18, "1e18 * 1000e18 / 2000e18");
+    }
+
+    /// @notice Setting balances twice reverts.
+    /// @dev `Balances.sol:38` guards on both registers being zero. Untested until now — a
+    ///      mutation deleting the guard entirely survived the suite.
+    function test_conformance_doubleBalancesReverts() public {
+        gateToken.setBalance(TAKER, 5);
+
+        bytes memory prog = bytes.concat(
+            hex"2314", bytes20(address(gateToken)),
+            hex"9040", bytes32(uint256(1000e18)), bytes32(uint256(2000e18)),
+            hex"9040", bytes32(uint256(5)), bytes32(uint256(6))
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Balances.SetBalancesExpectZeroBalances.selector, uint256(1000e18), uint256(2000e18))
+        );
+        this.runProgram(prog, TAKER, TOKEN_LO, TOKEN_HI, 1e18, 0, true);
+    }
+
+    /// @notice Pricing without balances reverts.
+    /// @dev `LimitSwap.sol:41`. Untested until now; a mutation making the guard unreachable
+    ///      survived.
+    function test_conformance_limitSwapWithoutBalancesReverts() public {
+        gateToken.setBalance(TAKER, 5);
+
+        bytes memory prog = bytes.concat(hex"2314", bytes20(address(gateToken)), hex"530101");
+
+        vm.expectRevert(abi.encodeWithSelector(LimitSwap.LimitSwapRequiresBothBalancesNonZero.selector, 0, 0));
+        this.runProgram(prog, TAKER, TOKEN_LO, TOKEN_HI, 1e18, 0, true);
+    }
+
+    /// @notice Pricing twice reverts — the recompute guard.
+    /// @dev `LimitSwap.sol:48`. No case ever pre-set the output register, so a mutation making
+    ///      both recompute arms unreachable changed nothing at all.
+    function test_conformance_recomputeDetectedOnExactIn() public {
+        gateToken.setBalance(TAKER, 5);
+
+        vm.expectRevert(LimitSwap.LimitSwapRecomputeDetected.selector);
+        // amountOut already set on entry, so the exact-in leg must refuse to price again.
+        this.runProgram(_program(address(gateToken)), TAKER, TOKEN_LO, TOKEN_HI, 1e18, 7, true);
+    }
+
+    /// @notice Mirror of the above on the exact-out leg. `LimitSwap.sol:51`.
+    function test_conformance_recomputeDetectedOnExactOut() public {
+        gateToken.setBalance(TAKER, 5);
+
+        vm.expectRevert(LimitSwap.LimitSwapRecomputeDetected.selector);
+        this.runProgram(_program(address(gateToken)), TAKER, TOKEN_LO, TOKEN_HI, 7, 3, false);
+    }
 }

@@ -17,7 +17,50 @@ each one. See `PLAN.md` §5a for the model.
 |---|---|---|---|---|
 | `0x23` | `OnlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | `TESTED` | `InstructionConformance.t.sol` |
 | `0x90` | `StaticBalances` | `Balances.sol:37-47` | `TESTED` | `InstructionConformance.t.sol` (both orientations) |
-| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | `InstructionConformance.t.sol` (exact-in and exact-out) |
+| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | **`DEFECTIVE`** | see open defect D-1 below |
+
+## OPEN DEFECT D-1 — `0x53` diverges on reversed token order
+
+**Found by conformance, on a clean build, reproducible.** The semantics is WRONG for
+exact-in when `tokenIn > tokenOut`.
+
+| case | direction byte | Solidity | K |
+|---|---|---|---|
+| `tokenIn < tokenOut` | `0x01` | prices | prices ✓ |
+| `tokenIn > tokenOut` | `0x00` | **prices** (`amountOut = 0.5e18`) | **`Reverted("LimitSwapRecomputeDetected")`** ✗ |
+| `tokenIn < tokenOut` | `0x00` | mismatch | mismatch ✓ |
+| `tokenIn > tokenOut` | `0x01` | mismatch | mismatch ✓ |
+
+Three of four combinations are correct. Only the case where `#makerDirLt` and
+`tokenIn < tokenOut` are **both false** fails, and it falls through to the exact-in recompute
+rule — which requires `AOUT =/=Int 0` while `AOUT` is `0`. That should be impossible, so the
+success rule must be failing to apply for a reason not yet identified; `#exec(83)` then matches
+the next rule instead.
+
+Ruled out so far: the two rules are mutually exclusive on `AOUT` (verified in the compiled
+source, host and container md5 identical); moving the discrimination from a cell pattern into
+`requires` changes nothing; the firing rule is the **exact-in** recompute arm, confirmed by
+renaming the two arms apart and re-running.
+
+**Impact.** Half of all token pairs — every maker whose `tokenIn` sorts above `tokenOut` —
+are modelled as reverting when they price. Any theorem touching `0x53` on that branch is
+unsound. The Phase 1 gate theorem is unaffected: it reverts at the gate and never reaches
+`0x53`.
+
+**Not fixed. Do not mark `0x53` `TESTED` until it is.**
+
+**Downgraded after review.** A reviewer established that `semantics/conformance/run.sh` had
+been broken since Phase 1 — it passed only `$PGM` while the configuration had grown six more
+variables, so `krun` failed on the first case and **the K engine executed no program at all**
+under the shipped harness. Every mutant to `swapvm.md` survived it trivially. The comparison
+that justified `TESTED` was manual, one-time and undated. `run.sh` is now repaired, with
+per-case configuration and an added gate-rejection case.
+
+Mutation testing then found the suite missed: exact-in rounding direction (the catalogue
+program divides exactly, so floor and ceiling were indistinguishable), all three secondary
+revert arms, and the orientation branch — the reversed-order test asserted only a revert
+selector and passed under a full orientation flip. Six tests were added; one of them found
+defect D-1.
 
 `TESTED` via `test/conformance/InstructionConformance.t.sol`, which routes opcodes to the
 **real instruction bodies** inherited from `Controls`, `Balances` and `LimitSwap` — only the

@@ -1,9 +1,12 @@
 SwapVM — decode loop
 ====================
 
-Phase 0 of `PLAN.md`: the configuration and the fetch/decode/dispatch loop, mirroring
-`src/libs/VM.sol:118-150`. **No instruction rules yet** — a program of unknown opcodes runs to
-completion doing nothing, which is what makes the decode loop testable in isolation.
+The configuration and fetch/decode/dispatch loop mirroring `src/libs/VM.sol:118-150`, plus the
+three instruction rules added in Phase 1 (`0x23`, `0x90`, `0x53`).
+
+`Settled` is declared in `Status` but **no rule produces it** — settlement happens outside
+`runLoop`. Any claim phrased as "never reaches `Settled`" is therefore vacuous; state the
+revert reason instead.
 
 ```k
 module SWAPVM-SYNTAX
@@ -263,10 +266,10 @@ Then the two pricing directions.
   rule <k> #exec ( 83 , ARGS ) => .K ... </k>
        <isExactIn> true </isExactIn>
        <amountIn> AIN </amountIn>
-       <amountOut> 0 => limitQuoteOut(AIN, BIN, BOUT) </amountOut>
+       <amountOut> AOUT => limitQuoteOut(AIN, BIN, BOUT) </amountOut>
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
-    requires BIN >Int 0 andBool BOUT >Int 0
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT ==Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
@@ -279,11 +282,11 @@ Then the two pricing directions.
 
   rule <k> #exec ( 83 , ARGS ) => .K ... </k>
        <isExactIn> false </isExactIn>
-       <amountIn> 0 => limitQuoteIn(AOUT, BIN, BOUT) </amountIn>
+       <amountIn> AIN => limitQuoteIn(AOUT, BIN, BOUT) </amountIn>
        <amountOut> AOUT </amountOut>
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
-    requires BIN >Int 0 andBool BOUT >Int 0
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN ==Int 0
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
 
   rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
@@ -295,6 +298,35 @@ Then the two pricing directions.
      andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
 ```
 
+Malformed arguments on a MODELLED opcode
+----------------------------------------
+
+**This closes a real soundness hole.** The instruction rules above all constrain
+`lengthBytes(ARGS)`, but the Solidity constrains nothing: `address(bytes20(args))` and
+`bytes32(args)` right-zero-pad short arguments and truncate long ones, with no revert. So
+`0x23 0x13` followed by 19 bytes gate-checks a *different address* on chain, while every rule
+above fails to match — and the instruction would fall through to the `[owise]` no-op below,
+**silently deleting a security gate from the model while it stays live in production**.
+
+A review confirmed this by execution: K produced `Running` with `#unknown(35, ...)` in the
+trace where the real VM enforces the gate.
+
+Modelling the pad-and-truncate semantics properly is Phase 2 work. Until then these rules make
+the gap **loud instead of silent** — a proof touching such an instruction fails rather than
+succeeding on a fiction. That is the safe direction to be wrong in.
+
+```k
+  rule <k> #exec ( 35 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
+    requires lengthBytes(ARGS) =/=Int 20
+
+  rule <k> #exec ( 144 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
+    requires lengthBytes(ARGS) =/=Int 64
+```
+
+`0x53` needs no such rule: its rules place no constraint on the argument length, and
+`#makerDirLt` is total — matching `uint8(bytes1(args)) != 0`, which yields `false` on empty
+arguments.
+
 Unknown opcodes
 ---------------
 
@@ -303,10 +335,15 @@ a bug in the loop — an unknown opcode is a no-op that records itself in the tr
 made the Phase 0 decode loop testable before any instruction existed, and it is the twin of the
 recording stub in `test/conformance/RunLoopConformance.t.sol`.
 
-**It is also a soundness hazard once instructions exist**: a program using an unmodelled opcode
-will appear to execute rather than failing loudly. Every theorem must therefore either fix the
-whole program concretely, or be stated so that unmodelled opcodes cannot affect the conclusion.
-The Phase 1 gate theorem is the latter — it reverts before the tail is ever decoded.
+**It remains a soundness hazard, and the mitigation is narrower than it looks.** A program
+using an unmodelled opcode appears to execute here, while production reverts `UnknownOpcode`
+(`src/opcodes/Opcodes.sol:101`). Every theorem must therefore either fix the whole program
+concretely, or be stated so that unmodelled opcodes cannot affect the conclusion. The Phase 1
+gate theorem is the latter — it reverts before the tail is ever decoded.
+
+Note what the rules immediately above buy: previously this hazard covered *modelled* opcodes
+too, whenever their argument length was non-canonical. It is now confined to genuinely
+unmodelled opcodes, which is a much smaller and more visible surface.
 
 ```k
   rule <k> #exec ( OP , ARGS ) => .K ... </k>

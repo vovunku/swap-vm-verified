@@ -187,8 +187,9 @@ OnlyTakerTokenBalanceNonZero(gateToken) ; StaticBalances([bIn,bOut]) ; LimitSwap
 ```
 
 **Theorem:** for any program whose first instruction is `OnlyTakerTokenBalanceNonZero(g)`, a
-taker holding zero `g` cannot reach `<status> Settled`, **regardless of the remaining program
-bytes**. Stated over a symbolic tail — that is what makes it worth more than the scenario
+taker holding zero `g` ends in `Reverted("TakerTokenBalanceIsZero")`, **regardless of the
+remaining program bytes**. (Stated originally as "cannot reach `Settled`", which was vacuous —
+no rule produces `Settled`.) Stated over a symbolic tail — that is what makes it worth more than the scenario
 tests, which can only sample.
 
 **Acceptance:** theorem proved over a symbolic tail, AND conformance passes on the concrete
