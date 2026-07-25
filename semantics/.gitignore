@@ -1,0 +1,6 @@
+# K build artifacts (nix-native scripts: run-proofs.sh, conformance/run-native.sh,
+# mutation/run-native.sh). These are multi-hundred-MB kompiled definitions and temp files.
+swapvm-haskell/
+swapvm-llvm/
+_conf_lit.txt
+_work-native/
