@@ -474,9 +474,19 @@ module SWAPVM-LEMMAS
 // so. Both rules shipped without it and were dead until a Booster log was inspected
 // directly. Do not remove it. See LEMMA-CRAFT.md for how to read those logs.
 //
-// This also means the `--lemmas` fast loop CANNOT test these: pyk's Kore converter accepts
-// only six rule attributes and hard-errors on `preserves-definedness`, so a fast-loop run
-// gives a false negative for every division lemma in this file. Test them via a rebuild.
+// CORRECTION: this comment used to claim the `--lemmas` fast loop cannot test these, because
+// pyk hard-errors on `preserves-definedness`. FALSE, and it misled several agents into
+// ten-minute rebuilds they did not need. A rule with `/Int` on the LHS carrying that
+// attribute loads fine. The real hazard is that ONE malformed rule rejects the WHOLE scratch
+// file, and it renders as `PROOF FAILED` per test above a `0 passed. 0 failed.` summary.
+//
+// SEPARATELY, AND MORE IMPORTANT: the two rules below are probably INERT. KEVM ships
+// `A modInt B => A requires 0 <=Int A andBool A <Int B` (int-simplification.k:217). At
+// `B := maxUInt256` its side condition is `X *Int Y <Int maxUInt256` -- the same non-linear
+// query as ours, stronger by exactly one value. MULMOD is simplified before EQ is reached,
+// so stock fires first and our LHS ceases to exist, or stock fails and ours fails too. The
+// observed collapse of `Math.mulDiv` is real but is probably NOT caused by these rules.
+// Nobody has produced an APPLIED log either way. Do not cite them as a lemma success.
 
     rule [mul512-high-zero]:
       chop ( ( ( X *Int Y ) modInt maxUInt256 ) -Int chop ( X *Int Y ) )
@@ -618,9 +628,14 @@ module SWAPVM-LEMMAS
 // and it is silently dead. That is not a theoretical risk: `mul512-high-zero` in Section 6
 // sat inert in this file for exactly that reason.
 //
-// A consequence worth knowing: none of these can be tested with the `--lemmas` fast loop,
-// because pyk hard-errors on `preserves-definedness`. They are testable only through a
-// rebuild, which is why they must live here rather than in an agent's scratch file.
+// CORRECTION: an earlier version of this comment said none of these could be tested with the
+// `--lemmas` fast loop because pyk hard-errors on `preserves-definedness`. THAT IS FALSE, and
+// it was propagated to every agent in this project -- at least one went straight to a
+// ten-minute rebuild on the strength of it and lost most of its budget. Verified by direct
+// load: a rule with `/Int` on the LHS carrying `preserves-definedness` loads through
+// `Foundry.load_lemmas` with the attribute intact. The real hazard is that ONE malformed rule
+// rejects the WHOLE file at add-module time, and the failure renders as `PROOF FAILED` per
+// test above a `0 passed. 0 failed.` summary -- indistinguishable from a refutation.
 
 // The convex-combination bounds. A linear interpolation between S0 and S1 lies between
 // them, so a blend can never escape the interval its endpoints span. This is

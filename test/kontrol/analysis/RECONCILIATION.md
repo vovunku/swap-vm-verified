@@ -74,23 +74,44 @@ wrong tool for it; `merge-nodes` on the sqrt-exit leaves is the candidate.
 
 ## 3. The lemma verdict
 
-**68 rules. Two have confirmed firing evidence. Four were dead. The rest are unevidenced.**
+**68 rules. ONE has real evidence. Four were dead. The rest are unevidenced or disputed.**
 
 | Rule | Evidence | Consequence |
 |---|---|---|
-| `mul512-high-zero`, `-nochop` | **CONFIRMED**, term-level | Real and decisive — see below |
-| `asword-buf29-zeros-lit` | **STRONG** — flipped a FAILING proof to PASSED | Real |
+| `mul512-high-zero`, `-nochop` | **DISPUTED — probably INERT** | See below; my earlier claim was wrong |
+| `asword-buf29-zeros-lit` | **STRONG** — flipped a FAILING proof to PASSED | The one clear win |
 | `mul-guard-word`, `-comm`, `mul-guard-or-collapse-l`, `-r` | **DEAD until today** | Zero contribution for their whole life |
 | The other ~61 | **No agent has reported firing evidence for any of them** | Unknown |
 
-**The mul512 rules are the case for lemmas, and it is a strong one.** Direct evidence from
-`kontrol show --node 140` on a 197-node proof of the real instruction: the WordStack holds
-`( ( KV2_balanceIn *Int ( KV6_minRaw +Int 1 ) ) /Int 1000000000000000000 )` — `Math.mulDiv`
-already reduced to the plain fast-path form. Across all 197 nodes, `modInt` appears **zero**
-times and `mulmod` **zero** times, while `_*Int_` appears in 80. Five `mulDiv` calls produced
-**zero branches**. A live 512-bit path would leave `modInt` residue and split per call.
-That rule turned an instruction half that was considered unprovable into one that executes
-straight through. It is also why the `XYCConcentrate` transcription may now be removable.
+Five agent sessions have now each been asked directly for firing evidence. Every one reported
+**none** for every rule it wrote or exercised. That is five independent honest negatives, and
+at some point that stops being a gap in the evidence and becomes the evidence.
+
+**CORRECTION — I claimed the mul512 rules were the strong case for lemmas. They probably are
+not, and the reasoning that persuaded me was a confusion of correlation with cause.**
+
+The observation is solid: on a 197-node proof of the real instruction, `modInt` appears
+**zero** times, `mulmod` **zero** times, and five `Math.mulDiv` calls produced **zero
+branches**. `mulDiv` genuinely collapses.
+
+But it does not follow that our rule is what collapses it. KEVM ships
+`rule A modInt B => A requires 0 <=Int A andBool A <Int B` (`int-simplification.k:217`).
+Instantiated at `A := X *Int Y`, `B := maxUInt256` its side condition is `X *Int Y <Int
+maxUInt256` — the *same non-linear query* as our rule's `X *Int Y <Int pow256`, stronger by
+exactly one value. `MULMOD` is simplified before `EQ` is reached, so either the solver
+discharges the bound and **stock fires first, after which our rule's LHS no longer exists in
+the term**, or it cannot, in which case our rule's own side condition fails too. The rules are
+inert everywhere except at `X *Int Y == 2^256 - 1`.
+
+**Both explanations predict identical evidence** — zero `modInt`, zero splits, plain `/Int`
+residue — so the node scan cannot distinguish them. Only a `--haskell-log-dir` run showing
+`mul512-high-zero` under `APPLIED` would, and nobody has produced one.
+
+This matters practically the moment a caller's factors are wide enough that the solver stalls
+on the product bound, which is exactly `test_full_cannotDrainPool` with its free `uint256`
+price bounds. There, neither rule helps. The proposed replacement drops the non-linear side
+condition and rewrites to the semantic predicate `X *Int Y <Int pow256` rather than to `true`
+— see `scratch-Mul512.k`, untested and not merged.
 
 **The case against is the other sixty-one.** Across four agent sessions today, lemma work
 closed **zero** proofs. The five that closed were closed by running one property per
