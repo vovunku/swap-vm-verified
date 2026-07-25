@@ -9,6 +9,35 @@ a proof about a copy is a proof about a copy. The rest call the real code. Which
 recorded below, along with the honest status of the properties that are supposed to close
 the gap.
 
+## The standing policy
+
+**Harnesses stay plain. Reason on whole functions.**
+
+A harness assembles a `Context` from scalars, calls the real internal function, and reads the
+registers back. That is all it should do. It does not extract internal parts, it does not
+transcribe logic, and it does not restructure the code under test to make a proof easier.
+
+The reason is not aesthetic. Every deviation from a plain import is a claim about deployed
+code that rests on a human comparison instead of on the prover, and those claims accumulate
+silently — six properties in this repo currently sit behind one, and nothing machine-checked
+connects them to the real instruction. A plain harness cannot drift, because there is nothing
+to drift from.
+
+**Splitting is the fallback, not the plan.** If a whole function will not yield, the first
+moves are to improve the prover (a lemma) or to sharpen the spec (fix a parameter that
+production fixes anyway — see `AGENT-PROTOCOL.md`). Only when both have failed is a manual
+split justified, and then it must be recorded in this file at the weaker evidence tier with
+a differential property named to close it.
+
+Two such splits exist today, both from before this policy: the `XYCConcentrate` leg surface
+and the `PeggedSwap` seam. Both are scaffolding to be removed, not patterns to copy. The
+route to removing them is the lemma work, not more transcription.
+
+**And never restructure the deployed source to suit the prover.** These contracts are live at
+`0x8fdd04dbf6111437b44bbca99c28882434e0958f` on twelve chains; a source edit changes the
+metadata hash and therefore the deployed bytecode, even when every instruction is identical.
+A verification difficulty is a reason to improve the prover or the spec.
+
 ## Why harnesses exist at all
 
 Not for convenience. Two hard constraints in the source make direct proof impossible:
