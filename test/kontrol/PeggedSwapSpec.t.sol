@@ -339,8 +339,37 @@ contract PeggedSwapSpec is Test {
     // =======================================================================
     // 1. The four `parse` guards (PeggedSwap.sol:52-61)
     //
-    //    None of these reaches any arithmetic, so they are the cheapest proofs in the
-    //    file: no `Math.sqrt` is executed on any path they explore.
+    //    CORRECTION (2026-07-25). An earlier revision of this comment claimed these are
+    //    "the cheapest proofs in the file: no `Math.sqrt` is executed on any path they
+    //    explore". Both halves are false, and the error is structural rather than a
+    //    misestimate.
+    //
+    //    Each property below is a *biconditional*. Its negative direction quantifies over
+    //    every input on which the guard does NOT fire — and on those inputs `parse`
+    //    returns and the instruction runs to completion, through `invariantFromReserves`
+    //    (two `Math.sqrt` calls) and then `solve` (a third). So the parse guards explore
+    //    strictly MORE `Math.sqrt` than, say, `test_bothBalancesZeroGuardFiresWhenBothZero`,
+    //    whose domain is pinned to `balanceIn == balanceOut == 0` and which therefore does
+    //    stop at `:104` before any arithmetic. The one-sided `vm.expectRevert` shape the
+    //    original comment was describing is not the shape used here, deliberately — see
+    //    METHOD in the contract doc comment.
+    //
+    //    Measured, from the proof store (`execution_time`, highest passing version):
+    //
+    //      test_panicSelectorIsTheAbiPanicSelector          85 s   fully concrete
+    //      test_knownUnderflow_exactOutAtLargeReserves      66 s   fully concrete
+    //      test_exactOut_realisticPoolPricesCleanly         69 s   fully concrete
+    //      test_knownOverflow_exactInAtSmallNormaliser      73 s   fully concrete
+    //      test_seam_realisticPoolMatchesInstruction       207 s   fully concrete
+    //      test_bothBalancesZeroGuardFiresWhenBothZero     557 s   symbolic, stops at :104
+    //      test_parse_*                                      -     none has ever terminated
+    //
+    //    The cheapest proofs in this file are the *concrete-input* ones of section 8/9, by
+    //    an order of magnitude. Nothing in section 1 has closed. Treat the parse guards as
+    //    among the most expensive properties here, not the least, and do not use them as a
+    //    warm-up target: `test_parse_linearWidthBoundIsInclusive` is the only one whose
+    //    args are concrete, and even it leaves `balanceIn`/`amountIn` symbolic and so runs
+    //    the whole curve.
     // =======================================================================
 
     /// @notice `PeggedSwapInvalidArgsLength` fires exactly when `args.length < 160`, and
@@ -1351,7 +1380,58 @@ contract PeggedSwapSpec is Test {
 
     // -----------------------------------------------------------------------
     // 9a. Group E over the seam — the intended proof targets
+    //
+    //     FIXED-LAYOUT ARGS, and this is load-bearing. Every property in 9a and 9c builds
+    //     its `args` with `_args(...)` from five symbolic words rather than taking a
+    //     `bytes calldata`. That is a deliberate change made 2026-07-25 after dumping the
+    //     frontier node of the previous, symbolic-`bytes` revision.
+    //
+    //     What the dump showed. `test_seam_deadCode_noSolutionIsUnreachable_exactIn:0`
+    //     spent 1256 s to reach 31 nodes and stopped at node 39 — which is the JUMPI of
+    //     the `x0_raw | y0_raw != 0` guard at `PeggedSwap.sol:104`, i.e. execution had not
+    //     yet performed a single multiplication, let alone reached an `_isqrt` call. The
+    //     KCFG was a caterpillar of seven splits, one per source-level guard
+    //     (`length >= 160`, `x0 > 0`, `y0 > 0`, `linearWidth <= MAX`, `rateLt > 0`,
+    //     `rateGt > 0`, `balances not both zero`), each costing ~170 s, and each carrying
+    //     a ~840-step arm that unwinds to a revert leaf. The guard conditions themselves
+    //     appear in the path condition as opaque byte-string comparisons —
+    //     `b"\x00"*32 ==K #range(KV7_args, 96, 32)` — because with `lengthBytes(args)`
+    //     symbolic nothing relates a calldata slice to an integer.
+    //
+    //     Building the record with `_args` removes all seven splits at once: the length is
+    //     concretely 160, and the five fields arrive as integers that `_nonZero` and
+    //     `_validWidth` already place inside the accepted range, so every guard is decided
+    //     without branching and no `#range(args, k, 32)` term is ever formed.
+    //
+    //     DOMAIN, and why it is not a weakening of the claim. The properties in 9a assert
+    //     that a specific *arithmetic* error selector is unreachable. On any `args` that
+    //     `parse` rejects, execution never enters the arithmetic at all and reverts with
+    //     one of the four parse selectors instead — so those inputs satisfy the conclusion
+    //     for a reason that has nothing to do with the seam, and section 1 is where that
+    //     half is specified. Restricting to `args.length == 160` with in-range fields
+    //     therefore drops exactly the inputs on which the property is true by inspection.
+    //     It is still a narrowing and it is recorded as one; what it is not is a narrowing
+    //     that hides a counterexample.
     // -----------------------------------------------------------------------
+
+    /// @dev The five-field record used by every seam property: symbolic in each field,
+    ///      concrete in layout. Each helper is saturating, so the union of the two
+    ///      branches it introduces covers the whole accepted range of that field.
+    function _seamArgs(
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return _args(
+            _nonZero(x0Seed), _nonZero(y0Seed), _validWidth(widthSeed), _nonZero(rateLtSeed), _nonZero(rateGtSeed)
+        );
+    }
 
     /// @notice `PeggedSwapMathNoSolution` is unreachable, stated over the seam.
     /// @dev The seamed form of `test_deadCode_noSolutionIsUnreachable_exactIn`. The proof
@@ -1372,11 +1452,17 @@ contract PeggedSwapSpec is Test {
         uint128 witnessV,
         uint128 witnessMid,
         uint128 witnessDisc,
-        bytes calldata args
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
     )
         public
         view
     {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
         (bool ok, bytes memory err,) =
             _trySeamExactIn(balanceIn, balanceOut, amountIn, witnessU, witnessV, witnessMid, witnessDisc, args);
 
@@ -1394,11 +1480,17 @@ contract PeggedSwapSpec is Test {
         uint128 witnessV,
         uint128 witnessMid,
         uint128 witnessDisc,
-        bytes calldata args
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
     )
         public
         view
     {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
         (bool ok, bytes memory err,) =
             _trySeamExactOut(balanceIn, balanceOut, amountOut, witnessU, witnessV, witnessMid, witnessDisc, args);
 
@@ -1423,16 +1515,164 @@ contract PeggedSwapSpec is Test {
         uint128 witnessV,
         uint128 witnessMid,
         uint128 witnessDisc,
-        bytes calldata args
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
     )
         public
         view
     {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
         (bool ok, bytes memory err,) =
             _trySeamExactOut(balanceIn, balanceOut, amountOut, witnessU, witnessV, witnessMid, witnessDisc, args);
 
         if (!ok) {
             assertTrue(_selectorOf(err) != _selInvalidInput(), "PeggedSwapMathInvalidInput must be unreachable");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 9c. Sections 2, 4 and 5 restated over the seam
+    //
+    //     Everything in sections 2, 4 and 5 is *stated* without reference to a square
+    //     root — the clamp, the one-wei floor and register isolation are all claims about
+    //     registers — but on Surface 1 their *proofs* must still execute four `Math.sqrt`
+    //     bodies, roughly 2^28 paths, because the assertions sit after them. That is why
+    //     none of them has ever terminated. Over the seam the same claims cost one
+    //     straight-line pass plus the witness checks.
+    //
+    //     These are new properties rather than edits to sections 2/4/5: the Surface 1
+    //     forms are the theorems, and these are the seam-conditional evidence for them.
+    //     Read them exactly as 9a is read — conditional on the differential in 9b.
+    //
+    //     ANTI-VACUITY. All three are `if (ok)` implications, so they would be vacuous if
+    //     the seam never priced successfully. `test_seam_realisticPoolMatchesInstruction`
+    //     is the concrete witness that it does, at `linearWidth = 100e27` with all four
+    //     sqrt sites live, and it is PASSED under Kontrol rather than merely fuzz-green.
+    // -----------------------------------------------------------------------
+
+    /// @notice The seam preserves the `PeggedSwapBothBalancesZero` guard at `:104`.
+    /// @dev The cheapest property in section 9 by construction: with both balances zero the
+    ///      run reverts at `:104`, before the first multiplication, so no `_isqrt` is
+    ///      reached and no witness is inspected. It exists as the calibration point for the
+    ///      fixed-layout arg shape described in 9a — if this does not close, nothing in
+    ///      section 9 will — and as one more transcription-fidelity check, which matters
+    ///      because 9b is fuzz-only and cannot be run under Kontrol.
+    function test_seam_bothBalancesZeroGuardFiresWhenBothZero(
+        uint256 amountIn,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint256 rateLtSeed,
+        uint256 rateGtSeed
+    )
+        public
+        view
+    {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
+        (bool ok, bytes memory err,) =
+            _trySeamExactIn(0, 0, amountIn, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        assertFalse(ok, "both balances zero must revert on the seam too");
+        assertTrue(_selectorOf(err) == _selBothZero(), "the seam must preserve the both-balances-zero selector");
+    }
+
+    /// @notice Seam exact-out: the `:196` clamp, the `:218-220` one-wei floor, and the two
+    ///         balance registers, in a single symbolic execution.
+    ///
+    /// @dev NARROWED, by parameter type rather than by `vm.assume` — `uint64` balances and
+    ///      `uint32` rates. The reason is the checked multiplications: `x0 = balanceIn *
+    ///      rateIn` (`PeggedSwap.sol:144`) is `mul` with both operands symbolic, and each
+    ///      such site that cannot be discharged adds an overflow branch whose arm is a
+    ///      revert leaf. At `uint64 * uint32 <= 2^96` the products are provably in range
+    ///      and those branches vanish; `x0_init`/`y0_init` are left at `uint256` because
+    ///      they are divisors, not factors, and widen nothing.
+    ///
+    ///      The overflow at `PeggedSwapMath.sol:25` (`u * ONE`, the second panic recorded
+    ///      in section 8) is NOT excluded by this narrowing and remains a live branch — it
+    ///      is driven by the ratio `x0 / x0_init`, which stays unbounded here. The `if (ok)`
+    ///      guard is what makes that sound: on the overflowing inputs the seam reverts and
+    ///      the property is silent about them, exactly as its Surface 1 twins are.
+    ///
+    ///      `amountNetPulled` is absent because `seamExactOut` pins it to zero; the full
+    ///      register-isolation claim needs a `seamRun` entry point on the harness and is
+    ///      left to whoever adds one.
+    function test_seam_exactOut_clampFloorAndBalancesUntouched(
+        uint64 balanceIn,
+        uint64 balanceOut,
+        uint256 amountOut,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint32 rateLtSeed,
+        uint32 rateGtSeed
+    )
+        public
+        view
+    {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
+        (bool ok,, SwapRegisters memory regs) =
+            _trySeamExactOut(balanceIn, balanceOut, amountOut, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        if (ok) {
+            uint256 expected = amountOut > balanceOut ? balanceOut : amountOut;
+            assertEq(regs.amountOut, expected, "exact-out must clamp the requested output to balanceOut");
+            if (regs.amountOut != 0) {
+                assertGe(regs.amountIn, 1, "a non-zero exact-out fill must cost at least one wei in");
+            }
+            assertEq(regs.balanceIn, balanceIn, "balanceIn must be untouched");
+            assertEq(regs.balanceOut, balanceOut, "balanceOut must be untouched");
+        }
+    }
+
+    /// @notice Seam exact-in: `amountIn` survives unless the output reserve was drained,
+    ///         the quote never exceeds the output reserve, and the balances are untouched.
+    /// @dev Same narrowing and the same reasoning as its exact-out twin above. The
+    ///      disjunction is the one from `test_exactIn_amountInSurvivesUnlessTheOutputReserveIsDrained`:
+    ///      `ctx.swap.amountIn` is written only on the drain branch at `:179`.
+    function test_seam_exactIn_amountInSurvivesAndBalancesUntouched(
+        uint64 balanceIn,
+        uint64 balanceOut,
+        uint64 amountIn,
+        uint128 witnessU,
+        uint128 witnessV,
+        uint128 witnessMid,
+        uint128 witnessDisc,
+        uint256 x0Seed,
+        uint256 y0Seed,
+        uint256 widthSeed,
+        uint32 rateLtSeed,
+        uint32 rateGtSeed
+    )
+        public
+        view
+    {
+        bytes memory args = _seamArgs(x0Seed, y0Seed, widthSeed, rateLtSeed, rateGtSeed);
+
+        (bool ok,, SwapRegisters memory regs) =
+            _trySeamExactIn(balanceIn, balanceOut, amountIn, witnessU, witnessV, witnessMid, witnessDisc, args);
+
+        if (ok) {
+            assertTrue(
+                regs.amountIn == amountIn || regs.amountOut == balanceOut,
+                "exact-in may only rewrite amountIn on the drain branch"
+            );
+            assertLe(regs.amountOut, balanceOut, "exact-in must never quote more than the output reserve");
+            assertEq(regs.balanceIn, balanceIn, "balanceIn must be untouched");
+            assertEq(regs.balanceOut, balanceOut, "balanceOut must be untouched");
         }
     }
 
