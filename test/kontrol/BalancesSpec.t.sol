@@ -154,4 +154,89 @@ contract BalancesSpec is Test {
         assertEq(bin, 0, "all-zero args must leave balanceIn at zero");
         assertEq(bout, 0, "all-zero args must leave balanceOut at zero");
     }
+
+    // -----------------------------------------------------------------------
+    // Edge cases: degenerate and out-of-spec inputs
+    // -----------------------------------------------------------------------
+
+    /// @notice When `tokenIn == tokenOut`, the source takes the `else` branch — the same
+    ///         path as `tokenIn > tokenOut` — so `balanceIn` receives `args[1]` and
+    ///         `balanceOut` receives `args[0]`.
+    /// @dev `tokenIn == tokenOut` is not a meaningful swap, but the behaviour is concrete
+    ///      and worth pinning rather than leaving hidden behind `vm.assume(tokenIn != tokenOut)`.
+    ///      A future refactor that, e.g., added an explicit equality revert would be caught here.
+    function test_equalTokensTakesElseBranch() public {
+        address token = address(0xABCD);
+
+        (uint256 bin, uint256 bout) =
+            harness.applyStatic(token, token, 0, 0, _args(uint256(1), uint256(2)));
+
+        assertEq(bin, 2, "tokenIn==tokenOut must take the else branch: balanceIn = args[1]");
+        assertEq(bout, 1, "tokenIn==tokenOut must take the else branch: balanceOut = args[0]");
+    }
+
+    /// @notice Extra trailing bytes in `args` are ignored: only the first two 32-byte
+    ///         words are consumed.
+    /// @dev `parse` reads fixed offsets 0 and 32 and never inspects `args.length`, so a
+    ///      longer buffer is harmless. This is the benign side of the missing length check
+    ///      — the harmful side (short args) is documented below.
+    function test_oversizedArgsIgnoreTrailingBytes(address tokenIn, address tokenOut, uint256 extra) public {
+        vm.assume(tokenIn != tokenOut);
+
+        bytes memory args = abi.encodePacked(uint256(1), uint256(2), extra);
+
+        (uint256 bin, uint256 bout) = harness.applyStatic(tokenIn, tokenOut, 0, 0, args);
+
+        if (tokenIn < tokenOut) {
+            assertEq(bin, 1);
+            assertEq(bout, 2);
+        } else {
+            assertEq(bin, 2);
+            assertEq(bout, 1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Finding: NO length validation on `args` (not a desired invariant)
+    // -----------------------------------------------------------------------
+    //
+    // `BalancesArgsBuilder.parse` reads `args[0:32]` and `args[32:64]` via
+    // `uint256(bytes32(args))` and `uint256(bytes32(args.slice(32)))`. The `Calldata.slice`
+    // variant used here is unchecked assembly (`node_modules/@1inch/solidity-utils/.../
+    // Calldata.sol`): when `args.length < 64` it does NOT revert — `slice(32)` underflows
+    // the length and `bytes32` reads whatever bytes happen to follow in calldata.
+    //
+    // The tests below pin the *observed* behaviour so a future change to either `parse` or
+    // `Calldata.slice` is detected. They are NOT properties the instruction should be proud
+    // of: a proper fix is a length check in `parse` (or use the bounds-checked
+    // `slice(..., bytes4)` overload). Until then, a caller controlling the program/taker
+    // calldata can pass short args and have `balanceOut` (or both registers) read adjacent
+    // calldata rather than revert. Whether short args are reachable depends on the
+    // dispatcher, which is out of scope for this instruction-level spec.
+
+    /// @notice An empty `args` does not revert; both registers read adjacent calldata
+    ///         (which happens to be zero in this harness's calldata layout).
+    function test_finding_emptyArgsDoesNotRevert() public {
+        (uint256 bin, uint256 bout) = harness.applyStatic(address(1), address(2), 0, 0, "");
+
+        // Does not revert (no vm.expectRevert). The values read are an artefact of the
+        // external call's calldata layout, not a meaningful balance — pinned only to detect
+        // a change in the underlying unchecked slice.
+        assertEq(bin, 0, "empty args: balanceIn reads adjacent calldata");
+        assertEq(bout, 0, "empty args: balanceOut reads adjacent calldata");
+    }
+
+    /// @notice A single-word (32-byte) `args` does not revert; `balanceOut` reads the
+    ///         32 bytes immediately following `args[0]` in calldata rather than reverting.
+    function test_finding_shortArgsDoNotRevert() public {
+        // 32-byte args: balanceA is read correctly, balanceB reads adjacent calldata.
+        bytes memory args = abi.encodePacked(uint256(7));
+
+        (uint256 bin, uint256 bout) = harness.applyStatic(address(1), address(2), 0, 0, args);
+
+        // balanceIn == args[0] (the only real word); balanceOut is adjacent calldata (= 0
+        // in this layout). No revert occurs — the missing length check.
+        assertEq(bin, 7, "short args: balanceIn reads args[0]");
+        assertEq(bout, 0, "short args: balanceOut reads adjacent calldata (no revert)");
+    }
 }

@@ -41,6 +41,10 @@ All 17 specs pass as Foundry fuzz tests. Under Kontrol, as of the last run:
 | `BalancesSpec.test_revertsUnlessBothIncomingBalancesZero` | PASSED |
 | `BalancesSpec.test_succeedsWithBothIncomingBalancesZero` | PASSED |
 | `BalancesSpec.test_zeroArgsIsNoOpWhenRegistersZero` | PASSED |
+| `BalancesSpec.test_equalTokensTakesElseBranch` | PASSED |
+| `BalancesSpec.test_oversizedArgsIgnoreTrailingBytes` | PASSED |
+| `BalancesSpec.test_finding_emptyArgsDoesNotRevert` | PASSED |
+| `BalancesSpec.test_finding_shortArgsDoNotRevert` | PASSED |
 | everything else | not yet attempted |
 
 The two original passing proofs confirm the harness shape works end to end: an `internal pure`
@@ -49,13 +53,24 @@ provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` 
 property that does, and so the first real test of the lemma library.
 
 The `BalancesSpec` set closes without new lemmas (Track A3): `_staticBalancesXD` does no
-arithmetic, only a `tokenIn < tokenOut` branch and two calldata word reads. All six
+arithmetic, only a `tokenIn < tokenOut` branch and two calldata word reads. All ten
 properties are now machine-checked, including the token-address ordering of the args and
 the zero-balance guard that rejects a second application. The proofs are slower than their
-lack of arithmetic suggests — the bottleneck is symbolic calldata reasoning
-(`uint256(bytes32(args))` plus the unchecked `Calldata.slice(32)` assembly), which is the
-first spec here to parse multi-word args. The swap-symmetry property, which makes two
-harness calls, is the most expensive of the set (~2h wall under contention).
+lack of arithmetic suggests — but inspection of the KCFG shows the cost is symbolic-
+execution step count (~2.7k steps just for the harness/test machinery) plus KEVM server
+overhead, NOT a hard SMT goal: concrete-input proofs take ~12 min and the symbolic one
+only ~5 min more. So a `lemmas.k` simplification rule would not help here — the lever for
+Balances-style proofs is reducing executable steps (leaner harness) or the per-proof
+server cost, not discharging arithmetic. The lemmas library is the right tool for the
+Track B pricing instructions, where Z3 gets stuck on `X*Y <=Int C` with both operands
+symbolic; Balances has no such goal.
+
+The spec also documents a finding rather than a desired invariant: `parse` performs no
+length check on `args` (`Calldata.slice(32)` is unchecked assembly), so a short `args`
+does NOT revert — `balanceOut` silently reads the adjacent calldata. The two `test_finding_*`
+properties pin this observed behaviour so a future change is detected; the fix is a bounds
+check in `parse` (or the `slice(..., bytes4)` overload). Whether short args are reachable
+depends on the dispatcher, which is out of scope for this instruction-level spec.
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
 instruction as verified until it appears above.
