@@ -31,6 +31,34 @@ document. Two agents never hold the same file. This is what makes the work paral
 > file. A second agent on a file is worse than no agent — they race the same proof store and
 > one will kill the other's run.
 
+**Every agent writes lemmas, into its OWN file.** Proving is not the only deliverable; a
+lemma is worth more than a proof, because it transfers. Each agent owns
+`test/kontrol/lemmas/scratch-<Instruction>.k` and writes every rule it discovers there. Never
+edit `lemmas.k` — that is the shared library and only the coordinator merges into it. Two
+agents writing rules at the same time cannot collide, because they are writing to different
+files; integration is a coordinator step that happens later, on evidence.
+
+Module names must be unique too, or two `--lemmas` loads in the same container clash:
+
+    module SCRATCH-PEGGEDSWAP
+        imports KONTROL-MAIN
+        rule [pegged-unique-label]: <lhs> => <rhs> requires <cond> [simplification]
+    endmodule
+
+**A rule is only reportable if you saw it FIRE.** "I added the rule and the proof passed" is
+not evidence — the proof may have passed for another reason, and a rule written against a
+predicted term shape silently never matches. Establish firing one of two ways: node count or
+runtime changes materially with the rule and not without it, or the label appears under
+`APPLIED` in a `--haskell-log-dir` run. Report which method you used. Rules banked without
+this have already turned out to be inert.
+
+**`--lemmas` cannot test every rule.** pyk accepts six rule attributes and hard-errors on
+`preserves-definedness`, so any rule whose LHS contains a partial symbol (`/Int`, `%Int`,
+`modInt`) cannot go through the fast loop at all. Do not conclude such a rule is useless —
+put it in your scratch file, mark it `NEEDS-REBUILD`, and say so in the handoff. The
+coordinator tests it centrally. `mul512-high-zero` sat dead in `lemmas.k` for exactly this
+reason: it was missing `preserves-definedness`, so the Booster discarded it *before matching*.
+
 **Builds are serialized, proofs are not.** `kontrol build` mutates the single shared K
 definition and only the coordinator runs it. Any number of agents may run `kontrol prove`
 concurrently against a stable definition, capped at `--workers 3` each.
@@ -128,7 +156,9 @@ module imports `KONTROL-MAIN` (not `KONTROL-BASE` as `lemmas.k` does):
         rule [unique-label]: <lhs> => <rhs> requires <cond> [simplification]
     endmodule
 
-Name your file uniquely (`scratch-<instruction>.k`) so concurrent agents do not collide.
+Your scratch file is `test/kontrol/lemmas/scratch-<Instruction>.k` and it is yours alone —
+see the lemma-ownership rule above. Copy it into the container with `docker cp`; the prover
+reads the container's copy, not the host's.
 
 **Prefer `try`/`catch` to an assumption containing a division.** A symbolic `DIV` in the path
 condition stalls the prover. `try harness.f(...) returns (...) { assert } catch {}` states
@@ -173,7 +203,13 @@ End your report with a section titled `HANDOFF` containing:
   in under a second.
 - **Per stalled proof** — the node id, the ACTUAL blocking term you dumped, and what would
   close it. Not a guess at what might be wrong.
-- **Lemmas that worked** — exact K text, ready to merge. The highest-value part of the report.
+- **Lemmas** — the full contents of your `scratch-<Instruction>.k`, ready to merge. This is
+  the highest-value part of the report, and it is expected even if no proof closed. For each
+  rule give: the dumped term it was written against, the evidence that it FIRED, and whether
+  it is `NEEDS-REBUILD` (contains a partial symbol, so `--lemmas` could not test it).
+  Rules you tried that did NOT fire are also worth reporting, with the shape you expected
+  versus the shape KEVM actually produced — that comparison is what stops the next agent
+  repeating the attempt.
 - **Domains narrowed** — each one, and why.
 - **New findings** — any bug or unguarded path not already in `BUGS.md`, with its evidence
   level (CONFIRMED / SOURCE / MODELLED — see `BUGS.md`) and a witness if you have one.
@@ -189,7 +225,8 @@ End your report with a section titled `HANDOFF` containing:
 | Handoff contains | Action |
 |---|---|
 | A proof closed | Update `PROOF-MAP.md`. |
-| A working lemma | Merge into `lemmas.k`, rebuild centrally, verify the label lands in `out/kompiled/definition.kore`, re-dispatch the blocked proofs. |
+| A scratch lemma file | Review each rule for firing evidence. Merge the ones that fired into `lemmas.k` under the right section, rebuild centrally, verify each label lands in `out/kompiled/definition.kore`, re-dispatch the blocked proofs. Keep rules that fired but are not yet needed — they cost nothing and transfer. |
+| A `NEEDS-REBUILD` rule | The agent could not test it (`--lemmas` rejects `preserves-definedness`). Merge it *with* that attribute and A/B it centrally; do not bank it as working on the agent's word. |
 | A spec edit | Rebuild centrally, then dispatch a proving agent for that file. |
 | A new bug | Add to `BUGS.md` at the evidence level the agent justified. Promote to CONFIRMED only on an executed witness. |
 | A correction to `FINDINGS.md` | Amend it. Wrong shared knowledge propagates to every later agent. |
