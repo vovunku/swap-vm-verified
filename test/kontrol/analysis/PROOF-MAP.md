@@ -71,96 +71,58 @@ Track A, out of scope, listed for completeness: `LimitSwap` 9 (4 attempted, 0 pr
 `XYCConcentrateSpec`: `cannotDrainPool`, `partialFillNeverChargesMoreThanOffered`.
 `PiecewiseLinearScaleSpec`: `scaleNeverExpands`, both `unscale*`, `guard_scaleOut*`.
 
-## XYCSwap — 3 / 8
+## Per-spec notes
 
-| Property | State |
-|---|---|
-| `test_exactIn_constantProductNeverDecreases` | **P** |
-| `test_exactIn_revertsOnZeroBalanceIn` | **P** — but see note |
-| `test_exactIn_zeroInputYieldsZeroOutput` | **P** |
-| `test_exactIn_cannotDrainPool` | **S** 12 nodes |
-| `test_exactIn_roundsInFavourOfMaker` | **S** 12 nodes |
-| `test_exactOut_roundsInFavourOfMaker` | **S** 16 nodes |
-| `test_exactIn_revertsOnZeroBalanceOut` | · |
-| `test_exactIn_revertsWhenAmountOutAlreadySet` | · |
-| *new* exactness + witness properties | · (added, awaiting rebuild) |
+### XYCSwap — 5 / 12
+Strengthened from 8 to 12 properties after an audit showed the original four exact-in
+properties were **jointly satisfied by an implementation returning `0` unconditionally** —
+verified empirically against a throwaway mutant, not merely argued. The four additions
+(two-sided exactness on each leg, two concrete witnesses) are written and fuzz-green but
+await a rebuild before they can be proven.
 
-The three proven properties are **sound but jointly too weak**: an `exactIn` returning `0`
-unconditionally satisfies all of them. Two-sided exactness and a concrete witness are being
-added. `revertsOnZeroBalanceIn` uses a bare `vm.expectRevert()` and so cannot distinguish
-"the guard fired" from "it divided by zero".
+**Open regression.** `constantProductNeverDecreases` closed at `:0` in under ten minutes but
+`:1` will not close in thirty, sitting at the same node count with one pending node. That is
+the shape of a lemma or bytecode regression from a rebuild, not of a slow proof. **Bisect
+before trusting the current definition.**
 
-## PeggedSwap — 0 / 31
+Remaining gap: exact-out exactness is `uint120`-narrowed, so an implementation correct below
+`2^120` and overcharging above it still satisfies the spec. Closing it needs the minimality
+half stated unnarrowed — safe, since `(amountIn - 1) * d < N` is bounded by `N`, a product the
+instruction does form, and `lemmas.k` already has `updiv-minimal` in that shape.
 
-Nothing proven. **19 properties need `--reinit`** because their cached state predates the
-immutable→accessor fix; of those, **7 previously reported PASSED vacuously** (negative
-selector comparisons against a zero selector), including all three dead-code claims.
+### PeggedSwap — 1 / 31
+**19 properties need `--reinit`** because their cached state predates the immutable→accessor
+fix; **7 of those previously reported a vacuous PASS**, including all three dead-code claims.
+Grouped by sqrt cost: Group A needs no symbolic sqrt (cheapest); B one; C two, halting at the
+recompute guard; D up to four but discharged from the path condition alone (~2^28 paths);
+**E needs sqrt-value reasoning and cannot prove without the seam**; F is ~2^56 paths.
 
-Grouped by sqrt cost, per the spec author's handoff:
+### XYCConcentrate — 1 / 21
+Tier A keeps `_computeL` off the path by taking virtual reserves as scalars — verified both
+structurally and by gas measurement (legs' max 1,327 below `full`'s min 1,862).
 
-- **Group A** — no symbolic sqrt, cheapest: `bothBalancesZeroGuardFiresWhenBothZero`,
-  `knownUnderflow_exactOutAtLargeReserves`, `knownOverflow_exactInAtSmallNormaliser`,
-  `exactOut_realisticPoolPricesCleanly`, `panicSelectorIsTheAbiPanicSelector`.
-- **Group B** — one symbolic sqrt: the two `bothBalancesZero_*AlonePassesTheGuard`.
-- **Group C** — two sqrts, halts at the recompute guard: the two
-  `recomputeGuardFiresWithExactSelector`, the two `alwaysRevertsWhen*IsPreset`.
-- **Group D** — up to four sqrts but discharged from the path condition alone; correct with
-  zero axioms, the risk is path count (~2^28): the four `parse_*`,
-  `parse_linearWidthBoundIsInclusive`, `bothBalancesZeroGuardNeverFires*`, both
-  `recomputeGuardNeverFires*`, `exactOut_amountOutIsClampedToBalanceOut`,
-  `exactOut_nonZeroOutputCostsAtLeastOneWei`, both `leavesBalancesAndNetPulledUntouched`,
-  `exactIn_amountInSurvivesUnlessTheOutputReserveIsDrained`.
-- **Group E** — needs sqrt-value reasoning, will NOT prove without an abstraction: the three
-  `deadCode_*`, both `nominalPool_*SuccessPath`.
-- **Group F** — highest path count (~2^56): both `directionSymmetry_*`.
+Tier B is blocked on **two** things: the `mul512` collapse (dead until the
+`preserves-definedness` fix, so every attempt so far ran without it) **and** an `isqrt` seam,
+since `_computeL` calls `Math.sqrt(disc)` with `disc` fully symbolic. `test_full_cannotDrainPool`
+additionally cannot close via `mul512` even in principle — its price bounds are free
+`uint256`s, so the 512-bit path is genuinely reachable. That one is a specification-domain
+problem.
 
-## XYCConcentrate — 1 / 21
-
-| Property | State |
-|---|---|
-| `test_exactIn_clampIsReachable_witness` | **P** — concrete, refutes the strict no-drain form |
-| 14 further Tier A properties | · |
-| 6 Tier B properties | · — blocked |
-
-**Tier A** keeps `_computeL` off the execution path by taking the virtual reserves as scalar
-parameters. Verified two ways by the spec author: structurally, and by gas measurement (the
-legs' max, 1,327, is below `full`'s min, 1,862).
-
-**Tier B is blocked on two things, not one.** `mul512` collapse (Section 6 of `lemmas.k`)
-*and* an `isqrt` abstraction — `_computeL` calls `Math.sqrt(disc)` with `disc` fully
-symbolic, which Section 7 (symbolic *squares*) does not address. `test_full_cannotDrainPool`
-additionally cannot be closed by Section 6 even in principle: its price bounds are free
-`uint256`s, so `X *Int Y < pow256` is not derivable and the 512-bit path is genuinely
-reachable. That is a specification-domain problem.
-
-**Completion criterion:** the two `test_diff_*` properties. Until they close, every Tier A
+**Completion criterion: the two `test_diff_*` properties.** Until they close, every Tier A
 result is a theorem about a hand transcription rather than about `XYCConcentrate`.
 
-## PiecewiseLinearScale — 0 / 31
+### PiecewiseLinearScale — 4 / 31
+`--bmc-depth 51` yields a **complete** result rather than a bounded one: `runLoop` reads
+`argsLength` as a single byte, so the segment count is at most 50 and iteration 51 is
+infeasible. Verify no reachable `bounded` leaves remain afterwards.
 
-Nothing proven yet. Order from the spec author's handoff: the two `value_*` scale properties
-first (one MUL, one SHR), then the guard group, then the concrete-shape group (2- and
-3-point schedules, loop fully unrolled), then the two `value_unscale*` properties which need
-the new Section 5 `ceilDiv` lemmas, then the two `*AnyLengthArgs` properties with
-`--bmc-depth 51`.
+**X** `test_argsLength_underThirteenBytesNeverTerminates` — excluded from `kontrol prove`. It
+witnesses a non-terminating loop via a gas cap, and gas is off under Kontrol.
 
-**X** `test_argsLength_underThirteenBytesNeverTerminates` — excluded from `kontrol prove`.
-It witnesses a non-terminating loop via a gas cap, and gas is off under Kontrol, so the
-proof would never converge.
-
-`--bmc-depth 51` should yield a **complete** result rather than a bounded one: `runLoop`
-reads `argsLength` as a single byte, so the segment count is at most 50 and the path entering
-iteration 51 is infeasible. Verify no reachable `bounded` leaves remain afterwards.
-
-## Power — spec not written
-
-Track B item B4's second half. Consumed by `DutchAuction` and `TWAPSwap`. The trip count is
-`bitlength(exponent)` — bounded by 16 for `DutchAuction` — so it always terminates; the
-difficulty is **path count**, since the `exponent & 1` branch has two continuing arms and
-leaves grow as `2^bitlength`. Plan is order properties plus concrete witnesses at small
-exponents, not the closed form.
-
----
+### Power — 0 / 31
+Spec written, never built. Single-execution-path properties (concrete exponents) should prove
+first; `uint8`-exponent properties need `--bmc-depth 9`; full-`uint256`-exponent properties
+need a loop invariant rather than a larger depth.
 
 ## Blockers, ranked by properties unblocked
 
