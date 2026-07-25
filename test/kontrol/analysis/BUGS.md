@@ -92,9 +92,20 @@ there and the loop is genuinely infinite.
 
 ### DutchAuction — unguarded division by zero
 
-**Level: SOURCE.** `DutchAuction.sol:97` divides by `decay`. `decayFactor < 1e18` is enforced at
-build time (`:28`), so repeated squaring drives `decay` to zero for large `elapsed`, giving a
-reachable unguarded `Panic(0x12)`. The `decayFactor` check does not prevent it.
+**Level: CONFIRMED, with an in-range witness.** `DutchAuction.sol:97` divides by `decay`.
+`decayFactor < 1e18` is enforced at build time (`:28`), so repeated squaring drives `decay` to
+zero and the `decayFactor` check does not prevent it.
+
+The `Power` spec pins concrete witnesses well inside the legal domain:
+
+- `pow(0.99e18, 4096, 1e18) == 1` and `pow(0.99e18, 4097, 1e18) == 0`. `4097` is comfortably
+  inside `type(uint16).max`, the width of `duration` — so a 0.99 decay factor divides by zero
+  after **4097 seconds**, roughly 68 minutes.
+- `pow(0.5e18, 60, 1e18) == 0` — a steep but legal decay factor reaches zero in **60 seconds**.
+
+Both decay factors are legal. The collapse is not asymptotic: the last non-zero value is 1 wei,
+so it goes 1 → 0 in a single step. Any auction configured with a steep decay and a duration in
+the ordinary range hits an unguarded `Panic(0x12)` partway through its own lifetime.
 
 ### PiecewiseLinearScale — silent truncation in `unscaleValue`
 
@@ -104,6 +115,29 @@ function returns a wrong result with no revert. `test_value_unscaleSilentlyTrunc
 pins it concretely at `value = 2**232`, where it returns `0`. The repo's own fuzz test works
 around this by bounding its input (`test/PiecewiseLinearScale.t.sol:68`), so the precondition
 exists but is undocumented.
+
+### Power — the trailing square panics on a representable answer
+
+**Level: CONFIRMED, pinned by `test_squaring_*` in `PowerSpec`.**
+
+`Power.pow`'s loop is `while (exponent > 0)`, so it squares `base` once more *after* the final
+set bit has been consumed. That square is dead work — its result is never read — but it is
+checked arithmetic, so it can revert on an input whose answer is perfectly representable:
+
+- `pow(2**128, 1, p)` reverts `Panic(0x11)` for **every** `p`, including `1e18`, though the
+  answer is just `B`.
+- `pow(2, 255, 1)` reverts, while `2 ** 255` is fine.
+
+solc's own `**` operator iterates while `exponent > 1` and does not have this. The totality
+frontier is exactly `precision <= type(uint128).max`: `pow(2**128 - 1, 3, 2**128 - 1)` succeeds
+and `pow(2**128, 2, 2**128)` panics.
+
+Fix is one guard on the squaring step, or the branchless rewrite below, which removes it as a
+side effect.
+
+Related: the panic code for the zero-precision case is **not uniform**. `p == 0, E > 0` gives
+`Panic(0x12)` for every odd exponent and for even exponents with `base <= type(uint128).max`,
+but at `base = 2**128, E = 2` the trailing square overflows first and the panic is `0x11`.
 
 ### PeggedSwap — second `Panic(0x11)`, overflow at `:167`
 
@@ -158,3 +192,40 @@ clamp reads the pre-`runLoop` register while the comparison reads `runLoop`'s re
   `:196` gives `amountOut <= balanceOut`, hence `v1 <= v`, and flooring is monotone. Corollary:
   the subtraction at `:199` cannot underflow, which leaves `:215` as the only candidate when
   attributing an exact-out `Panic(0x11)` — directly relevant to the investigation above.
+
+---
+
+## Proposed upstream fix — branchless constant-trip-count `Power.pow`
+
+Validated bit-exactly against the current implementation on 20,000 random `(B <= p, E < 2^16)`
+triples at `p` in `{1e18, 2^40, 97, 2^127}` — zero mismatches.
+
+```solidity
+/// 16 iterations, no data-dependent branch. Sound for base <= precision.
+function pow16(uint256 base, uint256 exponent, uint256 precision) internal pure returns (uint256 result) {
+    result = precision;
+    for (uint256 i = 0; i < 16; ++i) {
+        uint256 m = 0 - ((exponent >> i) & 1);
+        result = (result * ((base & m) | (precision & ~m))) / precision;
+
+        uint256 live = 0 - ((exponent >> i) != 0 ? 1 : 0);
+        base = (base * ((base & live) | (precision & ~live))) / precision;
+    }
+}
+```
+
+The selects are exact rather than approximate: when the bit is clear the multiplier is
+`precision`, and `result * precision / precision == result` with no floor loss because
+`precision` divides the product.
+
+It buys three things. It **removes the trailing-square panic** — once the exponent is exhausted
+the squaring becomes the identity. It makes gas **constant**, which also makes `.gas-snapshot`
+deterministic for `DutchAuction`. And it collapses every full-`uint256`-exponent property from
+"needs a loop invariant" to a single-path goal.
+
+Two caveats before proposing it. It is only sound for `base <= precision` unless the `live`
+guard is kept (the sketch keeps it); `DutchAuction` satisfies this by construction and
+`TWAPSwap` by its hardcoded `0.9999e18`, but a general caller does not. And it costs 16
+mul/div pairs unconditionally, so it is roughly gas-neutral at large `elapsed` and more
+expensive for small — the `uint16` bound on `duration` is what makes it specifically
+attractive for `DutchAuction` rather than in general.
