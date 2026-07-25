@@ -177,32 +177,6 @@ contract XYCSwapSpec is Test {
         }
     }
 
-    /// @notice The exact-out leg charges exactly the ceiling of the curve value.
-    ///
-    /// @dev The two-sided companion to `test_exactOut_roundsInFavourOfMaker`. The exact-out
-    ///      leg has the mirror-image weakness of the exact-in leg: a lone `>=` bound on the
-    ///      taker's payment is satisfied by an implementation that overcharges without
-    ///      limit. With `N = amountOut * balanceIn` and `d = balanceOut - amountOut`:
-    ///
-    ///        amountIn * d >= N       (never rounds the taker's payment down — maker safety)
-    ///        amountIn * d <  N + d   (and is the *least* such value, so the maker cannot
-    ///                                 overcharge by a whole unit either)
-    ///
-    ///      DOMAIN NARROWING: `uint120` operands. Unlike the exact-in case above, the
-    ///      subtraction trick does not rescue this one. `amountIn * d` is a product the
-    ///      instruction never forms — it computes `ceilDiv(N, d)` and stops — and it is
-    ///      bounded only by `N + d - 1`, which can exceed `2^256` when `N` is near the top
-    ///      of the range. So there is no term the instruction already evaluated that bounds
-    ///      it, and at full width the assertion would be a statement about `chop(...)`
-    ///      rather than about the curve. `uint120` gives `N < 2^240` and
-    ///      `amountIn * d <= N + d - 1 < 2^240 + 2^120`, so every product here is exact.
-    ///
-    ///      The one-sided maker-safety statement in `test_exactOut_roundsInFavourOfMaker`
-    ///      is kept separately and is not narrowed beyond the `2^128` bound it already
-    ///      carried.
-    ///
-    ///      `amountOut == 0` is deliberately left in the domain: it is the boundary case
-    ///      where the ceiling must *not* round up to 1.
     /// @notice The exact-out leg returns exactly the ceiling of the curve value — neither one
     ///         wei high nor one wei low.
     ///
@@ -231,8 +205,10 @@ contract XYCSwapSpec is Test {
     ///          the result is at most `N`. This is the maker-safety half.
     ///
     ///      `amountOut > 0` is a case split, not a domain narrowing: at `amountOut == 0` the
-    ///      quote is zero and `amountIn - 1` would underflow. That case is covered by
-    ///      `test_exactOut_zeroOutputYieldsZeroInput`.
+    ///      quote is zero and `amountIn - 1` would underflow. That boundary is covered by
+    ///      `test_exactOut_zeroOutputCostsNothing` directly below — it was briefly covered by
+    ///      nothing, because an earlier version of this comment pointed at a test that lives
+    ///      in `XYCConcentrateSpec`, not here.
     function test_exactOut_isExactlyTheCeiling(uint256 balanceIn, uint256 balanceOut, uint256 amountOut)
         public
         view
@@ -257,6 +233,23 @@ contract XYCSwapSpec is Test {
         }
     }
 
+
+    /// @notice A zero output request costs the taker nothing, and in particular the ceiling
+    ///         does not round it up to one wei.
+    ///
+    /// @dev The `amountOut == 0` boundary excluded from `test_exactOut_isExactlyTheCeiling`,
+    ///      which needs `amountOut > 0` so that `amountIn - 1` cannot underflow. Without this
+    ///      the boundary would be covered by nothing at all.
+    function test_exactOut_zeroOutputCostsNothing(uint256 balanceIn, uint256 balanceOut) public view {
+        vm.assume(balanceIn > 0);
+        vm.assume(balanceOut > 0);
+
+        try harness.exactOut(balanceIn, balanceOut, 0, "") returns (uint256 amountIn) {
+            assertEq(amountIn, 0, "a zero output request must cost nothing");
+        } catch {
+            // Reverted; nothing to pin.
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Reachability witnesses

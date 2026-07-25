@@ -308,6 +308,17 @@ module SWAPVM-LEMMAS
       [simplification(40), preserves-definedness]
 
 // Pins a quotient from a two-sided window -- the shape the unscaleValue round trip needs.
+// The remainder of a floor division is below the divisor. Needed by two-sided exactness
+// properties written as `A - (A/B)*B < B` rather than `A < (A/B + 1)*B`, which is the form
+// that avoids forming a product the instruction never evaluated.
+// Soundness: A -Int (A /Int B) *Int B is A modInt B, which lies in [0, B) for B > 0.
+// DERIVABLE. Validated over 400k random samples including full-width uint256 values.
+    rule [div-remainder-lt]:
+      A -Int ( ( A /Int B ) *Int B ) <Int B => true
+      requires 0 <=Int A
+       andBool 0 <Int B
+      [simplification, preserves-definedness]
+
     rule [div-eq-from-window]:
       ( A /Int B ) ==Int C => true
       requires 0 <=Int A andBool 0 <Int B

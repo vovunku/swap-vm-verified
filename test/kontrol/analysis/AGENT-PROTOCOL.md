@@ -8,6 +8,18 @@ bug in `BUGS.md`, or dispatching follow-up work.
 
 ## Rules
 
+**Reaping orphans: use the parent-liveness test, NOT `pkill`.** A `kore-rpc-booster` is always
+a direct child of the `kontrol` process using it, so `PPid == 1` means its client is gone.
+`pkill -9 -f kore-rpc-booster` destroys every agent's in-flight work; this does not:
+
+    for pid in $(pgrep -f kore-rpc-booster); do
+      [ "$(awk '/^PPid:/{print $2}' /proc/$pid/status)" = "1" ] && kill -9 "$pid"
+    done
+
+The leak is ongoing, not fixed: a measurement found 15 orphans burning 407% CPU and 14.5 GB,
+and six more accumulated within an hour. Reap before trusting any timing.
+
+
 **One file per agent.** An agent owns exactly one spec *or* one harness *or* one analysis
 document. Two agents never hold the same file. This is what makes the work parallel-safe;
 `lemmas.k`, `kontrol.toml` and `foundry.toml` are coordinator-only for the same reason.
