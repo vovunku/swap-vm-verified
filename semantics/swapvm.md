@@ -106,16 +106,26 @@ It fires *after* `pcs` has advanced past the args, so an instruction whose decla
 off the end reverts rather than reading out of bounds. Two ways to trip it: the two-byte
 header itself does not fit, or the args do not.
 
+**`pc` must be advanced before the check, not after.** Conformance caught this: the first
+version of these rules reverted with `pc` still at the instruction start, and the real VM
+reports the *advanced* value — `(91, 90)` where this model said `88`. Both reverted, and with
+the same reason, so only a test that inspects the revert arguments distinguishes them. It
+matters for any theorem stated about revert data.
+
+The header-does-not-fit arm reads the length byte from beyond the program. On the real VM that
+is `calldataload` past the end, which yields zero padding, so `argsLength` is `0` and `pcs`
+lands on `PC +Int 2`.
+
 ```k
   rule <k> #run => #revert("RunLoopExceedProgramLength") ... </k>
-       <pc> PC </pc>
+       <pc> PC => PC +Int 2 </pc>
        <program> PGM </program>
        <status> Running </status>
     requires PC <Int lengthBytes(PGM)
      andBool PC +Int 2 >Int lengthBytes(PGM)
 
   rule <k> #run => #revert("RunLoopExceedProgramLength") ... </k>
-       <pc> PC </pc>
+       <pc> PC => PC +Int 2 +Int PGM [ PC +Int 1 ] </pc>
        <program> PGM </program>
        <status> Running </status>
     requires PC +Int 2 <=Int lengthBytes(PGM)

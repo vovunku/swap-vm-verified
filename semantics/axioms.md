@@ -23,8 +23,18 @@ each one. See `PLAN.md` §5a for the model.
 
 | Component | Implementation | State | Notes |
 |---|---|---|---|
-| fetch/decode/dispatch | `VM.sol:118-150` | `ADMITTED` | `opcode = shr(248,w)`, `argsLen = and(shr(240,w),0xff)`, `pc += 2 + argsLen` |
-| program-length bound | `VM.sol:142` | `ADMITTED` | reverts `RunLoopExceedProgramLength` when `pcs > length` |
+| fetch/decode/dispatch | `VM.sol:118-150` | `TESTED` | `opcode = shr(248,w)`, `argsLen = and(shr(240,w),0xff)`, `pc += 2 + argsLen` |
+| program-length bound | `VM.sol:142` | `TESTED` | reverts `RunLoopExceedProgramLength` when `pcs > length` |
+
+Discharged by `semantics/conformance/run.sh` — five programs agree on final `pc` and revert
+status across both engines, plus six Solidity-side assertions on decoded opcodes and args
+lengths. **`TESTED`, not `PROVEN`**: this is evidence on those inputs, not a proof over all
+programs.
+
+Conformance already caught one drift. The first version of the K bound-check rules reverted
+with `pc` still at the instruction start, while the real VM reports the *advanced* value —
+`(91, 90)` where the model said `88`. Both reverted with the same reason, so only a test that
+inspects the revert arguments distinguishes them. Fixed to advance before checking.
 
 ## Theorems and what they rest on
 
