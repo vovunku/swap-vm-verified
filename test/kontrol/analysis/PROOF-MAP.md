@@ -90,6 +90,82 @@ Every one investigated so far has been environmental or structural, never a miss
 4. **Oversubscription.** 63 requested workers on 16 cores at one point; a `DebugApplyEquation`
    logging run held 47-52 GB and drove the box to load 34 with swap exhausted.
 
+## Where we are, and how to advance
+
+### The one diagnosis that explains almost everything
+
+Across five specs the pattern is now consistent enough to act on: **what closes is concrete
+arguments; what stalls is a symbolic product.**
+
+`PowerSpec` makes it exact. All twelve of its passing properties have concrete `base` AND
+concrete `precision` (or `precision == 0`, which reverts before any product forms). Every
+unproven one carries a symbolic product. The file's own docstring calls the `test_unroll_*`
+family "the cheapest surface in the file" because a literal exponent collapses the KCFG to
+one leaf — the premise is right and the conclusion is wrong. Path count collapses; cost does
+not, because `base` and `precision` stay symbolic and every iteration still carries a
+symbolic 256-bit checked multiply and a symbolic division.
+
+This reframes the project's bottleneck. It is not that we lack clever lemmas. It is that
+symbolic products do not rewrite, and three levers act on that directly.
+
+### Decision 1 — stop working around monolithic functions; split them at the source
+
+The `XYCConcentrate` harness contains a 98-line transcription for one reason: the pricing
+logic at `:143-159` sits *inside* `_xycConcentrateGrowLiquidity2D` (`:123-160`) with no
+function boundary, so there is nothing to import. The copy is not a shortcut taken instead of
+an import — it is what remains when no import exists.
+
+The fix is to extract `:143-159` into its own `internal` function in the production source.
+The harness then imports it like every other harness and the trust boundary disappears
+entirely: no copy, nothing to keep in sync, and no differential proof needed to close a gap
+that no longer exists. Since the function is `internal` and called once, the optimiser
+inlines it and the emitted code should be unchanged.
+
+**This is the general move.** Where a monolith blocks verification, split the monolith. It is
+cheaper than a transcription, and unlike a transcription it cannot drift.
+
+### Decision 2 — fix in the spec what production already fixes
+
+`Power.pow`'s `precision` is symbolic in every spec, and **both production callers pass
+`1e18`**. A spec variant that fixes `precision = 1e18` and leaves `base` symbolic is still a
+real theorem about `DutchAuction` and `TWAPSwap` — the only two things that call it — and it
+removes one of the two symbolic operands from every product in the loop.
+
+This is not weakening a spec. Narrowing a domain to buy a green checkmark is forbidden and
+stays forbidden. Fixing a parameter to the only value production ever supplies is a
+*different operation*: it states the theorem that is actually needed, and it should be
+labelled as such in the property name and docstring so nobody later mistakes it for the
+general claim.
+
+Apply the same test elsewhere: for each symbolic parameter, ask what production actually
+passes. If the answer is a constant, there is a strong theorem hiding behind a needlessly
+symbolic one.
+
+### Decision 3 — the profile, now settled
+
+The prove default has been reversed to checkpoint (see `kontrol.toml` for the full A/B
+history and the three measurements that forced it). The old settings live in
+`[prove.fast]`. Non-progress under the no-checkpoint profile is indistinguishable from a
+missing lemma, and that misdiagnosis has cost multiple sessions.
+
+### Ranked next moves
+
+1. **Extract `_xycConcentratePrice`** and delete the transcription. Converts six copy-proofs
+   into real-code proofs.
+2. **Add `precision = 1e18` variants** to `PowerSpec`. Cheapest large win available; likely
+   closes in minutes rather than hours.
+3. **Crack `mul512`.** Unblocks `XYCConcentrate`'s liquidity half outright, and is the
+   difference between the pricing half and the whole instruction.
+4. **`merge-nodes` with `keep_values=False`.** The spike works structurally — 48 pending
+   leaves collapsed to 1, with anti-unification discovering exactly the three loop registers
+   — but `keep_values=True` builds a 526,612-character pairwise disjunction and converts a
+   node explosion into a path-condition explosion. Dropping the disjunction is an
+   over-approximation, and therefore **sound for every safety property in `PowerSpec`**,
+   which are all upper bounds and orderings. It is a one-flag upstream ask.
+5. **Decide the `PeggedSwap` seam's fate.** 200 lines that have never executed, against a
+   ~90-line plain import in the same file that found the strongest bug in the repo. If
+   restating over a fixed-layout `_args(...)` does not make it run, delete it.
+
 ## Preserving proofs
 
 The proof store is expensive and already persistent — 8.5 hours of CPU produced the current
