@@ -1,18 +1,37 @@
 # Verification work plan
 
 Division of the instruction set between two people working in parallel, ordered so that
-neither blocks the other. See `README.md` for the workflow and the tier classification
-this is derived from.
+neither blocks the other.
+
+> **Status lives in `analysis/PROOF-MAP.md`**, not here. This file is the plan; that file is
+> the state. Read `analysis/AGENT-PROTOCOL.md` before dispatching anyone.
 
 **Splitting rule.** Track A takes instructions whose proofs should close with the lemma
 library as it stands — little or no non-linear arithmetic, so the work is writing good
 properties rather than fighting the prover. Track B takes the instructions that need lemma
 engineering, loop reasoning, or square roots.
 
-**File ownership.** One harness and one spec file per instruction, so the two tracks never
-touch the same file. The single shared file is `lemmas.k`; Track B owns it. If Track A
-needs a lemma, open an issue rather than editing it — a bad lemma silently invalidates
-every proof in the repo, so it is worth funnelling through one pair of hands.
+> **A/B means the track split and nothing else.** Track A is `Controls`, `MinRate`,
+> `Balances`, `LimitSwap`. Track B is `XYCSwap`, `PeggedSwap`, `XYCConcentrate`,
+> `PiecewiseLinearScale`, `Power`. `XYCConcentrate`'s internal difficulty split used to be
+> called "Tier A/B" as well, which collided with this and caused a real misunderstanding; it
+> is now **leg-level** versus **full-instruction**. Do not reintroduce "tier".
+
+**File ownership.** One harness and one spec file per agent, so tracks never touch the same
+file. The single shared file is `lemmas.k`; the coordinator owns it, along with
+`kontrol.toml` and `foundry.toml`. If you need a lemma, report it rather than editing.
+
+**What experience changed.** Three things were not in the original plan and cost real time:
+
+1. **Suspect the environment before the mathematics.** Every "stuck proof" diagnosed in this
+   project turned out to be resource-related — orphaned backend servers, a config measured
+   9.4x slower than default, oversubscription from `max-frontier-parallel` multiplying across
+   concurrent agents. The hit rate on properties given a fair run is high.
+2. **Vacuity is the real risk, not difficulty.** Constructor-set state reads as zero under
+   Kontrol, silently turning negative assertions into tautologies; and upper bounds alone are
+   satisfied by an implementation returning zero. Both were found in already-"passing" specs.
+3. **Lemmas must be written against compiled bytecode**, never the Solidity. `a - 1` arrives
+   as `chop(A +Int maxUInt256)`; `a > 0` as `bool2Word(notBool (A ==Int 0))`.
 
 ---
 

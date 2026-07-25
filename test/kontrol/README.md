@@ -27,22 +27,18 @@ Specs target **individual instructions**, not the VM as a whole. This is deliber
 
 ## Current status
 
-**71 properties across four instructions** — `XYCSwap` (8), `LimitSwap` (9), `MinRate` (29),
-`BaseFeeAdjuster` (25) — all pass as Foundry fuzz tests. Under Kontrol, as of the last run:
+**Do not look for proof counts here.** `analysis/PROOF-MAP.md` is the single source of truth
+and is regenerated after every subsession; a table duplicated into this file went stale three
+times before it was removed.
 
-| Proof | Status |
-|---|---|
-| `XYCSwapSpec.setUp()` | PASSED |
-| `XYCSwapSpec.test_exactIn_constantProductNeverDecreases` | PASSED |
-| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
-| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
-| `XYCSwapSpec.test_exactIn_cannotDrainPool` | in progress, reformulated |
-| `XYCSwapSpec.test_exactIn_roundsInFavourOfMaker` | in progress, reformulated |
-| `LimitSwapSpec`, `MinRateSpec`, `BaseFeeAdjusterSpec` | not yet attempted |
+Two rules that live with those numbers and are easy to get wrong:
 
-`constantProductNeverDecreases` is the substantive one: the constant-product invariant
-`(balanceIn + amountIn)(balanceOut - amountOut) >= balanceIn * balanceOut` proven for all
-inputs it quantifies over, in just under 10 minutes.
+- A property is proven only when `kontrol list` reports PASSED for its **highest** version.
+  Kontrol mints a new version whenever the spec or definition changes, so a PASSED at `:0`
+  says nothing once `:1` exists. This has produced both an inflated count and a false
+  regression report.
+- Passing `forge test` is a far weaker claim than being proven, and a fuzz-green property can
+  be outright vacuous. See the vacuity section of `analysis/AGENT-PROTOCOL.md`.
 
 ### Avoid putting a symbolic division in the path condition
 
