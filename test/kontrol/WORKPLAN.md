@@ -96,16 +96,29 @@ the repo. Derive the specification from the source and the whitepaper, and flag 
 
 ### B3. `XYCConcentrate`
 
-54 square-root references — the hardest instruction in the set. Do not start it before B2
-has produced a working `sqrt` lemma set.
+One `Math.sqrt` on the execution path and **no loops** — materially more tractable than the
+"54 square roots" figure suggested (that was a substring count over identifier names). The
+real blocker is `mul512`: every OZ `Math.mulDiv` runs `mulmod` inside it, six times per
+swap, and without a lemma collapsing it when the product fits in 256 bits, each `mulDiv`
+forks into a 512-bit path with a Newton modular inverse. Try `cse = true` before writing
+that lemma by hand.
 
 ### B4. `PiecewiseLinearScale` and `Power.pow`
 
-`Power.pow` is `while (exponent > 0)` — an unbounded loop with a symbolic trip count.
-Options, in increasing order of value: bound it with `--bmc-depth` and accept a bounded
-result; or prove a closed-form summary lemma for exponentiation-by-squaring and use that in
-place of executing the loop. The summary is the better outcome, since everything that
-reaches `Power.pow` inherits it.
+`PiecewiseLinearScale` is bounded: `runLoop` reads `argsLength` as a single byte, so
+`args.length ≤ 255` and the segment loop runs at most 50 times. With `args.length`
+constrained in the harness, `--bmc-depth 51` gives a **complete** result, not a bounded one.
+
+`Power.pow` terminates in `bitlength(exponent)` iterations — ≤ 16 for `DutchAuction`,
+≤ 256 for `TWAPSwap`. Calling it unbounded was wrong. Its difficulty is **path count**: the
+branch on `exponent & 1` has two continuing arms, so leaves grow as `2^bitlength`. Prove
+order properties (monotonicity, `B ≤ p ⇒ pow ≤ p`, the degenerate cases) rather than the
+closed form; with the floors present the exact identity only survives as an inequality.
+
+> **Read `analysis/FINDINGS.md` before starting B2, B3 or B4.** It records the corrections
+> above, several properties that are *false* and must not be ported from `XYCSwapSpec`
+> (notably `cannotDrainPool` for `XYCConcentrate`, and maker-favouring rounding for
+> `PeggedSwap`), four apparent bugs, and the places where code and documentation disagree.
 
 ### B5. Gas methodology
 
@@ -118,6 +131,11 @@ storage, gas per path is a constant rather than a symbolic expression, so provin
 ---
 
 ## Not scheduled
+
+> Tier assignments corrected after the semantics pass — see `analysis/FINDINGS.md`.
+> `BaseFeeAdjuster` and `SeriesEpochManager` do **not** use `Power` and have no loops;
+> `BaseFeeAdjuster` is a Tier-1 target and is a good unclaimed starting point.
+> Only `DutchAuction` and `TWAPSwap` reach `Power.pow`.
 
 **Tier 3** (`Invalidators`, `Decay`, `TWAPSwap`, `SeriesEpochManager`, `Fee`,
 `_dynamicBalancesXD`) touch storage or make external calls, and need a different harness
