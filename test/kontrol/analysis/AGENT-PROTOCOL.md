@@ -19,6 +19,20 @@ a direct child of the `kontrol` process using it, so `PPid == 1` means its clien
 The leak is ongoing, not fixed: a measurement found 15 orphans burning 407% CPU and 14.5 GB,
 and six more accumulated within an hour. Reap before trusting any timing.
 
+**A host-side `kill -9` does NOT kill a container-side proof, and the orphan test above will
+not catch what survives.** Killing the `docker exec` on the host leaves the `timeout` and
+`kontrol prove` processes alive inside the container, reparented to `PPid 1`. In one measured
+case such a survivor drove the *same proof directories* as its own replacement for 34
+minutes — two writers on one store, which is the hazard the one-agent-per-file rule exists to
+prevent, except invisible. The `PPid == 1` heuristic does not help here, because the offender
+is `kontrol prove` itself rather than a booster, and a legitimately detached runner also has
+`PPid 1`.
+
+So: kill container-side, by explicit PID, and then verify the process is gone.
+
+    docker exec kontrol ps -eo pid,ppid,etime,args --no-headers | grep '[k]ontrol prove'
+    docker exec kontrol kill -9 <pid>          # then re-run the ps and confirm
+
 
 **One file per agent.** An agent owns exactly one spec *or* one harness *or* one analysis
 document. Two agents never hold the same file. This is what makes the work parallel-safe;
@@ -63,12 +77,32 @@ runtime changes materially with the rule and not without it, or the label appear
 `APPLIED` in a `--haskell-log-dir` run. Report which method you used. Rules banked without
 this have already turned out to be inert.
 
-**`--lemmas` cannot test every rule.** pyk accepts six rule attributes and hard-errors on
-`preserves-definedness`, so any rule whose LHS contains a partial symbol (`/Int`, `%Int`,
-`modInt`) cannot go through the fast loop at all. Do not conclude such a rule is useless —
-put it in your scratch file, mark it `NEEDS-REBUILD`, and say so in the handoff. The
-coordinator tests it centrally. `mul512-high-zero` sat dead in `lemmas.k` for exactly this
-reason: it was missing `preserves-definedness`, so the Booster discarded it *before matching*.
+**`--lemmas` cannot test every rule, and a bad rule poisons the WHOLE file.** pyk accepts six
+rule attributes and hard-errors on `preserves-definedness`, so any rule whose LHS contains a
+partial symbol (`/Int`, `%Int`, `modInt`) cannot go through the fast loop at all.
+
+**Marking such a rule `NEEDS-REBUILD` is not enough — it must be COMMENTED OUT.** The check in
+`pyk/konvert/_kast_to_kore.py:335-350` has a fallback arm that *raises*, and it fires at
+`add-module` time, i.e. after the run has already started. One unusable attribute anywhere in
+your scratch file therefore takes down every rule in it, late and with a confusing error. Keep
+the rule text, comment it out, mark it `NEEDS-REBUILD`, and report it — the coordinator tests
+it centrally through a rebuild.
+
+`mul512-high-zero` sat dead in `lemmas.k` for the mirror-image reason: it was *missing*
+`preserves-definedness`, so the Booster discarded it before matching.
+
+**Check for shadowing before concluding a rule is too weak.** A general rule and a specific
+rule that share a top symbol and a priority are resolved by definition order, and **source
+order does not decide it** — the kompiler reordered `bool2word-or` ahead of `mul-guard-word`
+in `definition.kore` despite the opposite order in `lemmas.k`. Both `mul-guard-word` rules
+were dead for exactly this reason: the general `bool2Word(P) |Int bool2Word(Q)` rule matched
+first and destroyed the term before the specific rule was tried.
+
+Diagnose it statically, with no proof run: grep the labels out of
+`out/kompiled/definition.kore` and compare the emitted order. If a general rule precedes
+yours and subsumes its LHS, yours is dead and needs an explicit lower priority number
+(`[simplification(40)]`). This costs seconds and has already resolved a stall that survived
+a whole session of proof runs.
 
 **Substituting a production-fixed constant is allowed, and must be declared.** If a parameter
 is symbolic in the spec but production only ever passes one value, fixing it to that value is

@@ -190,20 +190,33 @@ module SWAPVM-LEMMAS
 
 // Solidity 0.8's checked-multiply guard, in the shape solc actually emits:
 // `or(iszero(a), eq(div(mul(a,b),a), b))`. Reaches KEVM as a bitwise `|Int` over two
-// `bool2Word`s with an unreduced `/Word` inside. Section 8's `bool2word-or` handles the
-// disjunction; this handles the whole guard.
+// `bool2Word`s with an unreduced `/Word` inside.
 // Soundness: the guard holds iff the product did not overflow. DERIVABLE.
+//
+// !! PRIORITY IS LOAD-BEARING. These rules were DEAD until it was added. !!
+//
+// Section 8's `bool2word-or` has LHS `bool2Word(P) |Int bool2Word(Q)`, which strictly
+// subsumes this one. With both at the default simplification priority (50) and the same
+// top symbol, definition order alone decides -- and the kompiler emitted `bool2word-or`
+// FIRST in definition.kore (line 64402) despite it appearing LATER here (Section 8), so
+// source order is not a reliable control. `bool2word-or` matched first every time and
+// destroyed the `|Int` before these rules were ever tried.
+//
+// Diagnosis method worth reusing: this was proven statically by grepping rule labels out
+// of `out/kompiled/definition.kore` and comparing their emitted order, with no proof run
+// at all. Any specific rule sharing a top symbol with a general one should be checked the
+// same way.
     rule [mul-guard-word]:
       bool2Word ( chop ( A *Int B ) /Word A ==Int B ) |Int bool2Word ( A ==Int 0 )
         => bool2Word ( A *Int B <Int pow256 )
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
-      [simplification]
+      [simplification(40)]
 
     rule [mul-guard-word-comm]:
       bool2Word ( A ==Int 0 ) |Int bool2Word ( chop ( A *Int B ) /Word A ==Int B )
         => bool2Word ( A *Int B <Int pow256 )
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
-      [simplification]
+      [simplification(40)]
 
 // Exact cancellation. KEVM's int-simplification has `(A *Int B) /Int A => B` but the
 // Booster discards it here for the same definedness reason as the mul512 rules -- and
@@ -569,6 +582,10 @@ module SWAPVM-LEMMAS
 // solc emits `or(iszero(a), eq(...))` as a bitwise `|Int` on two `bool2Word`s, and
 // bitwise-simplification.k has no rule relating that to `orBool`, so it reaches the JUMPI
 // SMT-opaque. Sound because `bool2Word` ranges over {0,1}. DERIVABLE.
+// !! This rule SHADOWS every more specific rule over `bool2Word(_) |Int bool2Word(_)`. !!
+// Four such rules exist (`mul-guard-word`, `-comm`, `mul-guard-or-collapse-l`, `-r`) and all
+// four carry an explicit `simplification(40)` so they are tried first. Any new rule of that
+// shape MUST do the same, or it is dead on arrival and will look merely too weak.
     rule [bool2word-or]:
       bool2Word ( P:Bool ) |Int bool2Word ( Q:Bool ) => bool2Word ( P orBool Q )
       [simplification]
@@ -693,12 +710,12 @@ module SWAPVM-LEMMAS
       bool2Word ( A ==Int 0 ) |Int bool2Word ( chop ( A *Int B ) /Int A ==Int B )
         => bool2Word ( A *Int B <Int pow256 )
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
-      [simplification, preserves-definedness]
+      [simplification(40), preserves-definedness]
 
     rule [mul-guard-or-collapse-r]:
       bool2Word ( A ==Int 0 ) |Int bool2Word ( B ==Int chop ( A *Int B ) /Int A )
         => bool2Word ( A *Int B <Int pow256 )
       requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
-      [simplification, preserves-definedness]
+      [simplification(40), preserves-definedness]
 
 endmodule
