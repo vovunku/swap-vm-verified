@@ -329,6 +329,11 @@ module SWAPVM-LEMMAS
 // Bridge shifts to arithmetic. Priority 60 so KEVM's `asWord-shr` (default 50) still wins
 // on byte-level goals -- do not raise it.
 //
+// NOTE: `shiftl-to-mul` below effectively NEVER FIRES. KEVM's bytes-simplification.k:95
+// rewrites `X <<Int Y` into byte form at default priority, which beats 60. Section 8's
+// `asword-buf29-zeros-*` rules are what actually handle a left shift here. Retained because
+// the right-shift half does fire.
+//
 // NOT a duplicate of Kontrol's aux `shift-to-div`, despite looking like one. That version
 // lacks `preserves-definedness` and is therefore discarded by the Booster before matching
 // (same failure mode as the mul512 rules in Section 6). Ours is the live one. Do not
@@ -421,6 +426,89 @@ module SWAPVM-LEMMAS
     rule [sq-no-overflow]:
       X *Int X <Int pow256 => true
       requires 0 <=Int X andBool X <Int pow128
+      [simplification]
+
+// ---------------------------------------------------------------------------
+// Section 8: compiled-form normalisations (evidence-backed)
+// ---------------------------------------------------------------------------
+//
+// Each rule here has direct before/after evidence from a real proof: the KCFG changed
+// shape, or a failing proof closed, when it was added. They all exist because solc or KEVM
+// presents a term in a form no stock rule matches.
+
+// `value << 24` never becomes a multiplication. KEVM's bytes-simplification.k:95 rewrites
+// `X <<Int Y` into `#asWord(#buf(32 - Y/8, X) +Bytes #buf(Y/8, 0))` at DEFAULT priority,
+// which beats Section 5's `shiftl-to-mul` at priority 60 -- so that rule never fires and the
+// shift stays in byte form. KEVM then knows only `< pow256`, too weak for the *checked*
+// addition on the next line: the prover splits on `pow256 <=Int #asWord(...) +Int scale` and
+// takes a spurious branch to a real EVMC_REVERT leaf.
+//
+// Evidence: adding this flipped `PiecewiseLinearScaleSpec.test_value_unscaleThenScaleIsIdentity`
+// from FAILING to PASSED. Before, the KCFG split at node 39 with a reverting child; after,
+// node 39 re-executed with no split and no overflow constraint in the path condition.
+//
+// Soundness: for X < 2^232 the 29-byte buffer holds X exactly and the three zero bytes are a
+// shift by 24. DERIVABLE.
+    rule [asword-buf29-zeros-lit]:
+      #asWord ( #buf ( 29 , X ) +Bytes b"\x00\x00\x00" ) => X *Int 16777216
+      requires 0 <=Int X andBool X <Int pow232
+      [simplification, preserves-definedness]
+
+    rule [asword-buf29-zeros-buf]:
+      #asWord ( #buf ( 29 , X ) +Bytes #buf ( 3 , 0 ) ) => X *Int 16777216
+      requires 0 <=Int X andBool X <Int pow232
+      [simplification, preserves-definedness]
+
+// A harness entry point returning `uint256` leaves the value as
+// `#asWord(#range(#padToWidth(32, #asByteStack(U)), 0, 32))`. KEVM's own
+// `#padToWidth(32, #asByteStack(V)) => #buf(32, V)` is guarded on `#rangeUInt(256, V)`, and
+// when V is an `up/Int` term KEVM cannot establish that bound -- `up/Int` is uninterpreted on
+// symbolic operands. Every downstream lemma then has to match the byte form instead of U.
+// DERIVABLE.
+    rule [abi-return-roundtrip-range]:
+      #asWord ( #range ( #padToWidth ( 32 , #asByteStack ( X ) ) , 0 , 32 ) ) => X
+      requires #rangeUInt(256, X)
+      [simplification]
+
+    rule [abi-return-roundtrip]:
+      #asWord ( #padToWidth ( 32 , #asByteStack ( X ) ) ) => X
+      requires #rangeUInt(256, X)
+      [simplification]
+
+// These two are what let the stock `#padToWidth` rule fire on an `up/Int` result.
+    rule [updiv-lt-pow256]:
+      A up/Int B <Int pow256 => true
+      requires 0 <=Int A andBool A <Int pow256 andBool 0 <Int B
+      [simplification]
+
+    rule [updiv-nonneg]:
+      0 <=Int A up/Int B => true
+      requires 0 <=Int A andBool 0 <Int B
+      [simplification]
+
+// solc emits `or(iszero(a), eq(...))` as a bitwise `|Int` on two `bool2Word`s, and
+// bitwise-simplification.k has no rule relating that to `orBool`, so it reaches the JUMPI
+// SMT-opaque. Sound because `bool2Word` ranges over {0,1}. DERIVABLE.
+    rule [bool2word-or]:
+      bool2Word ( P:Bool ) |Int bool2Word ( Q:Bool ) => bool2Word ( P orBool Q )
+      [simplification]
+
+    rule [bool2word-and]:
+      bool2Word ( P:Bool ) &Int bool2Word ( Q:Bool ) => bool2Word ( P andBool Q )
+      [simplification]
+
+// `if (++num == max)` is emitted as `DUP3 DUP3 SUB ... JUMPI`, never `EQ`, so KEVM sees
+// `chop(NUM -Int MAX) ==Int 0`. KEVM's `chop-add-r-pos`, `chop-add-r-neg` and
+// `chop-zero-sub` are all `[concrete(Y)]` and none matches a symbolic subtraction. Same
+// class of trap as `not-word-to-sub` in Section 3. DERIVABLE.
+    rule [chop-sub-eq-zero-l]:
+      chop ( A -Int B ) ==Int 0 => A ==Int B
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
+      [simplification]
+
+    rule [chop-sub-eq-zero-r]:
+      0 ==Int chop ( A -Int B ) => A ==Int B
+      requires #rangeUInt(256, A) andBool #rangeUInt(256, B)
       [simplification]
 
 endmodule
