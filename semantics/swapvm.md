@@ -45,17 +45,17 @@ external effects (`PLAN.md` D4).
       <swap>
         <balanceIn>  0 </balanceIn>
         <balanceOut> 0 </balanceOut>
-        <amountIn>   0 </amountIn>
-        <amountOut>  0 </amountOut>
+        <amountIn>   $AMOUNTIN:Int </amountIn>
+        <amountOut>  $AMOUNTOUT:Int </amountOut>
         <netPulled>  0 </netPulled>
       </swap>
       <query>
-        <isExactIn> true </isExactIn>
-        <tokenIn>   0 </tokenIn>
-        <tokenOut>  0 </tokenOut>
-        <taker>     0 </taker>
+        <isExactIn> $EXACTIN:Bool </isExactIn>
+        <tokenIn>   $TOKENIN:Int </tokenIn>
+        <tokenOut>  $TOKENOUT:Int </tokenOut>
+        <taker>     $TAKER:Int </taker>
       </query>
-      <balances>     .Map </balances>
+      <balances>     $BALANCES:Map </balances>
       <invalidators> .Map </invalidators>
       <status>    Running </status>
       <trace>      .List  </trace>
@@ -152,13 +152,161 @@ Reverting discards the rest of the computation.
        <status> _ => Reverted(MSG) </status>
 ```
 
+Instructions
+------------
+
+Phase 1 implements three, enough for the permissioned-swap program in
+`programs/permissioned-swap.md`. Each mirrors its Solidity source; see `PHASE1.md` for the
+side-by-side.
+
+`<balances>` is keyed by `bal(token, holder)` and is the abstraction boundary for external
+ERC-20 state (`PLAN.md` D4).
+
+```k
+  syntax KItem ::= bal ( Int , Int )
+
+  syntax Int ::= #balanceOf ( Map , Int , Int ) [function, total]
+  rule #balanceOf(B, TOKEN, HOLDER) => {B [ bal(TOKEN, HOLDER) ] orDefault 0}:>Int
+    requires isInt(B [ bal(TOKEN, HOLDER) ] orDefault 0)
+  rule #balanceOf(_, _, _) => 0 [owise]
+```
+
+### `0x23` OnlyTakerTokenBalanceNonZero — `Controls.sol:140-144`
+
+A pure guard: reads the taker's balance of the 20-byte token in `args` and reverts if zero.
+Writes no registers.
+
+```k
+  rule <k> #exec ( 35 , ARGS ) => .K ... </k>
+       <query> ... <taker> TAKER </taker> ... </query>
+       <balances> B </balances>
+    requires lengthBytes(ARGS) ==Int 20
+     andBool #balanceOf(B, Bytes2Int(ARGS, BE, Unsigned), TAKER) >Int 0
+
+  rule <k> #exec ( 35 , ARGS ) => #revert("TakerTokenBalanceIsZero") ... </k>
+       <query> ... <taker> TAKER </taker> ... </query>
+       <balances> B </balances>
+    requires lengthBytes(ARGS) ==Int 20
+     andBool #balanceOf(B, Bytes2Int(ARGS, BE, Unsigned), TAKER) <=Int 0
+```
+
+### `0x90` StaticBalances — `Balances.sol:37-47`
+
+Guards that both balance registers are still zero, then writes the pair **oriented by token
+order**: swapped when `tokenIn >= tokenOut`. Both branches are modelled — omitting one would
+make the semantics wrong for half of all token pairs.
+
+```k
+  rule <k> #exec ( 144 , ARGS ) => .K ... </k>
+       <balanceIn>  0 => Bytes2Int(substrBytes(ARGS,  0, 32), BE, Unsigned) </balanceIn>
+       <balanceOut> 0 => Bytes2Int(substrBytes(ARGS, 32, 64), BE, Unsigned) </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires lengthBytes(ARGS) ==Int 64 andBool TIN <Int TOUT
+
+  rule <k> #exec ( 144 , ARGS ) => .K ... </k>
+       <balanceIn>  0 => Bytes2Int(substrBytes(ARGS, 32, 64), BE, Unsigned) </balanceIn>
+       <balanceOut> 0 => Bytes2Int(substrBytes(ARGS,  0, 32), BE, Unsigned) </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires lengthBytes(ARGS) ==Int 64 andBool TIN >=Int TOUT
+
+  rule <k> #exec ( 144 , ARGS ) => #revert("SetBalancesExpectZeroBalances") ... </k>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+    requires lengthBytes(ARGS) ==Int 64
+     andBool notBool ( BIN ==Int 0 andBool BOUT ==Int 0 )
+```
+
+### `0x53` LimitSwap — `LimitSwap.sol:_limitSwap1D`
+
+Args are a **single byte**: `makerDirectionLt`, which must agree with the taker's direction.
+
+```k
+  syntax Bool ::= #makerDirLt ( Bytes ) [function, total]
+  rule #makerDirLt(ARGS) => ARGS [ 0 ] =/=Int 0 requires lengthBytes(ARGS) >Int 0
+  rule #makerDirLt(_)    => false               [owise]
+```
+
+The quote goes through named symbols per `PLAN.md` D2, so that weakening to axioms later is
+deleting the defining rule rather than restructuring. Floor on exact-in, ceiling on exact-out —
+both round toward the maker. `#ceilDiv` mirrors OpenZeppelin's `Math.ceilDiv`, which is
+`a == 0 ? 0 : (a - 1) / b + 1`.
+
+```k
+  syntax Int ::= limitQuoteOut ( Int , Int , Int ) [function]
+               | limitQuoteIn  ( Int , Int , Int ) [function]
+               | #ceilDiv      ( Int , Int )       [function]
+
+  rule limitQuoteOut(AIN,  BIN, BOUT) => AIN *Int BOUT /Int BIN            requires BIN >Int 0
+  rule limitQuoteIn (AOUT, BIN, BOUT) => #ceilDiv(AOUT *Int BIN, BOUT)     requires BOUT >Int 0
+
+  rule #ceilDiv(0, _) => 0
+  rule #ceilDiv(A, B) => ( A -Int 1 ) /Int B +Int 1  requires A =/=Int 0 andBool B >Int 0
+```
+
+The guards first: both balances non-zero, directions agree, and the output register not
+already set.
+
+```k
+  rule <k> #exec ( 83 , _ ) => #revert("LimitSwapRequiresBothBalancesNonZero") ... </k>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+    requires BIN <=Int 0 orBool BOUT <=Int 0
+
+  rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapDirectionMismatch") ... </k>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires BIN >Int 0 andBool BOUT >Int 0
+     andBool #makerDirLt(ARGS) =/=Bool ( TIN <Int TOUT )
+```
+
+Then the two pricing directions.
+
+```k
+  rule <k> #exec ( 83 , ARGS ) => .K ... </k>
+       <isExactIn> true </isExactIn>
+       <amountIn> AIN </amountIn>
+       <amountOut> 0 => limitQuoteOut(AIN, BIN, BOUT) </amountOut>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires BIN >Int 0 andBool BOUT >Int 0
+     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+
+  rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
+       <isExactIn> true </isExactIn>
+       <amountOut> AOUT </amountOut>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool AOUT =/=Int 0
+     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+
+  rule <k> #exec ( 83 , ARGS ) => .K ... </k>
+       <isExactIn> false </isExactIn>
+       <amountIn> 0 => limitQuoteIn(AOUT, BIN, BOUT) </amountIn>
+       <amountOut> AOUT </amountOut>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires BIN >Int 0 andBool BOUT >Int 0
+     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+
+  rule <k> #exec ( 83 , ARGS ) => #revert("LimitSwapRecomputeDetected") ... </k>
+       <isExactIn> false </isExactIn>
+       <amountIn> AIN </amountIn>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN =/=Int 0
+     andBool #makerDirLt(ARGS) ==Bool ( TIN <Int TOUT )
+```
+
 Unknown opcodes
 ---------------
 
-**Phase 0 only.** With no instruction rules written, every opcode is unknown. Rather than
-getting stuck — which is indistinguishable from a bug in the loop — an unknown opcode is a
-no-op that records itself in the trace. Each instruction rule added in Phase 1 takes priority
-over this, and this rule is deleted once the opcode set is complete.
+Every opcode without a rule above. Rather than getting stuck — which is indistinguishable from
+a bug in the loop — an unknown opcode is a no-op that records itself in the trace. This is what
+made the Phase 0 decode loop testable before any instruction existed, and it is the twin of the
+recording stub in `test/conformance/RunLoopConformance.t.sol`.
+
+**It is also a soundness hazard once instructions exist**: a program using an unmodelled opcode
+will appear to execute rather than failing loudly. Every theorem must therefore either fix the
+whole program concretely, or be stated so that unmodelled opcodes cannot affect the conclusion.
+The Phase 1 gate theorem is the latter — it reverts before the tail is ever decoded.
 
 ```k
   rule <k> #exec ( OP , ARGS ) => .K ... </k>

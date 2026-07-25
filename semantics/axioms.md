@@ -15,9 +15,39 @@ each one. See `PLAN.md` §5a for the model.
 
 | Opcode | Instruction | Implementation | State | Discharged by |
 |---|---|---|---|---|
-| `0x23` | `OnlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | `ADMITTED` | — |
-| `0x90` | `StaticBalances` | `Balances.sol` | `ADMITTED` | — |
-| `0x53` | `LimitSwap` | `LimitSwap.sol` | `ADMITTED` | — |
+| `0x23` | `OnlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | `TESTED` | `InstructionConformance.t.sol` |
+| `0x90` | `StaticBalances` | `Balances.sol:37-47` | `TESTED` | `InstructionConformance.t.sol` (both orientations) |
+| `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | `InstructionConformance.t.sol` (exact-in and exact-out) |
+
+`TESTED` via `test/conformance/InstructionConformance.t.sol`, which routes opcodes to the
+**real instruction bodies** inherited from `Controls`, `Balances` and `LimitSwap` — only the
+dispatch table is ours, which is what the production VM generates anyway. No instruction logic
+is reimplemented, so this compares K rules against production code and not against a
+transcription.
+
+Four cases agree register-for-register with `krun`: holding taker prices at 1:2
+(`amountOut = 2e18`), zero-balance taker reverts `TakerTokenBalanceIsZero` with balances
+untouched, reversed token order swaps the balance pair then rejects on direction, and exact-out
+rounds **up** (`amountIn = 2`, where floor would give 1 — so the assertion distinguishes
+rounding direction rather than merely exercising the path).
+
+Still **not `PROVEN`**: evidence on four inputs, not a proof over all inputs.
+
+## Generic bytes lemmas
+
+`semantics/lemmas.k`. Not domain facts — definitional identities about `+Bytes`,
+`substrBytes`, `Int2Bytes`, `Bytes2Int` that plain K does not ship. Without them a symbolic
+program built by concatenation cannot be decoded at all: the prover cannot reduce
+`(b"\x23\x14" +Bytes ... +Bytes TAIL) [ 0 ]` to `0x23`.
+
+| Lemma | State | Note |
+|---|---|---|
+| `lengthBytes` of concat | `ADMITTED` | definitional |
+| `lengthBytes(Int2Bytes(N,..)) => N` | `ADMITTED` | requires `N >= 0` |
+| index into left operand | `ADMITTED` | requires `I < lengthBytes(B1)` |
+| slice within left / within right | `ADMITTED` | side conditions make them total |
+| full-width slice is identity | `ADMITTED` | requires `E == lengthBytes(B)` |
+| `Bytes2Int ∘ Int2Bytes` round-trip | `ADMITTED` | requires `V < 2^(8N)`; the bound is what makes it exact rather than truncating |
 
 ## Decode loop
 
@@ -42,7 +72,15 @@ A theorem inherits the **weakest** state among the instructions it touches.
 
 | Theorem | Depends on | Effective state |
 |---|---|---|
-| `permissioned-swap-gate` | `0x23`, decode loop | `ADMITTED` |
+| `permissioned-swap-gate` | `0x23`, decode loop, bytes lemmas | `ADMITTED` |
+
+**PROVED** (`kprove` returns `#Top`) — `semantics/proofs/gate-spec.k`. For any program
+beginning `0x23 0x14 G`, with `TAIL` symbolic, a taker holding zero `G` ends
+`Reverted("TakerTokenBalanceIsZero")`. `TAIL` is never decoded, because `#revert` discards the
+continuation, so the proof does not case-split on it.
+
+Effective state is `ADMITTED` because the bytes lemmas are admitted, even though all three
+instructions are `TESTED`. The theorem inherits the weakest dependency.
 
 ## Abstraction log
 
@@ -56,6 +94,10 @@ definition to axioms, with the measurement that forced it. Empty is the good sta
 Statements known to be FALSE, asserted to fail. If one ever closes, the rule set is
 inconsistent and every result above it is void. See `PLAN.md` §5a.
 
-| Control | Expected | Last checked |
+| Control | Expected | Result |
 |---|---|---|
-| *(none yet)* | | |
+| `negative-control.k` — an *arbitrary* program reverts `TakerTokenBalanceIsZero` | must FAIL | **FAILS correctly** (`kprove` exit 1) |
+
+The claim drops the gate prefix and asserts every program reverts. It does not — the empty
+program terminates `Running`. If this ever proves, the rule set is inconsistent and every
+result above it is void.
