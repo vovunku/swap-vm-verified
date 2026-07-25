@@ -116,6 +116,19 @@ program built by concatenation cannot be decoded at all: the prover cannot reduc
 | index into **right** operand | `ADMITTED` | added in Phase 2; without it the opcode and args-length bytes of any instruction after the first cannot be read |
 | slice **straddling** the concatenation point | `ADMITTED` | added in Phase 2; splits at the boundary |
 
+**Correction to the "side conditions make them total" claim above: it is not literally true of
+the two Phase 2 additions.** Neither carries an upper bound (`I < len(B1)+len(B2)`;
+`E <= len(B1)+len(B2)`). A review verified this is nonetheless **not exploitable**, but for a
+different reason than totality: K's `Bytes[_]` is genuinely partial, so out of range both sides
+of the rule are equally stuck — `(b"\x01\x02" +Bytes b"\x03")[5] ==Int 0` and `==Int 9` both
+fail. There is no totalizing default the lemma could contradict. Sound, but the justification
+recorded here was the wrong one.
+
+The five slice/index rules were also checked for the D-1 hazard and are **pairwise disjoint**:
+left-index (`I < len B1`) vs right-index (`len B1 <= I`); within-left (`E <= len B1`) vs
+within-right (`len B1 <= S`) vs straddle (`S < len B1 < E`). The only overlap is straddle
+against the full-width identity rule, and they are confluent.
+
 The two Phase 2 additions were each found by a stall, not written speculatively. The pricing
 claim stopped at `pc 22` — it had decoded the gate and could not read the second instruction's
 args-length byte, because that byte falls in the *right* operand of a concatenation and only a
@@ -165,9 +178,17 @@ Negative control `pricing-negative-control.k` — the same claim with the maker-
 inequality reversed — **fails as required**. It reaches the arithmetic, unlike the Phase 1
 control it replaced.
 
-**Caveat that must travel with T1:** overflow is unmodelled. `amountIn * balanceOut` is checked
-arithmetic in Solidity and reverts `Panic(0x11)`; K's `Int` is unbounded and computes. The
-honest reading is *"given the products do not overflow"*.
+**Caveat that must travel with T1, stated exactly.** `LimitSwap.sol:49` is plain checked
+arithmetic — no `mulDiv` — so the divergence condition is precise: **K and the EVM differ iff
+`amountIn * balanceOut >= 2^256`**, where the EVM reverts `Panic(0x11)` and K computes. Below
+that they agree exactly, and the quotient is then also below `2^256`, so there is no second gap.
+
+**The `amountIn < 2^256` hypothesis does not bound the product, and is inert** — a review
+deleted it and the claim still proves. So T1 holds for arbitrarily large `amountIn`, including
+the region where the EVM would revert. `amountIn` is taker-chosen, so the divergence is
+reachable by construction for any `balanceOut`, at `amountIn >= 2^256 / balanceOut`.
+
+Read T1 as *"given the product does not overflow"*.
 
 **PROVED** (`kprove` returns `#Top`) — `semantics/proofs/gate-spec.k`. For any program
 beginning `0x23 0x14 G`, with `TAIL` symbolic, a taker holding zero `G` ends
@@ -193,6 +214,14 @@ inconsistent and every result above it is void. See `PLAN.md` §5a.
 |---|---|---|
 | `negative-control.k` — gate first, balance NON-zero, asserts `Reverted` | must FAIL | **FAILS at `<pc> 22`, `<status> Running`** — a real computed counterexample |
 | `control-sensitivity.k` — identical premises, conclusion `Running` | must PROVE | **`#Top`** |
+| `pricing-negative-control.k` — T1 with the maker-safety inequality REVERSED | must FAIL | **FAILS at `pc 91`** with the real quote in the register |
+| `pricing-spec.k` itself | doubles as T1's sensitivity witness | **`#Top`** — same premises, correct conclusion |
+
+**A sharper T1 control exists and should be added:** change `<=Int` to `<Int` in the
+maker-safety bound — a **one-character** edit. It is false exactly when `balanceIn` divides
+`amountIn * balanceOut`, so it discriminates the rounding decision itself rather than the
+direction of an inequality. A review verified it fails. The shipped control reverses the
+inequality, which is false for almost every input and is therefore a distant neighbour.
 
 The pair is the point. A control that fails proves nothing on its own — it may be failing for
 an incidental reason. The sensitivity witness has the same setup and the correct conclusion and

@@ -67,7 +67,9 @@ With `1000e18 / 2000e18`, a taker sending 1 unit of the low-sorting token receiv
 
 ## 3. What was proved
 
-**Exactly one theorem**, in `semantics/proofs/gate-spec.k`, `kprove` returns `#Top`:
+**Two theorems.**
+
+### T0 — the gate (`semantics/proofs/gate-spec.k`, `#Top`)
 
 > For any program `P = 0x23 0x14 G ++ TAIL` — `G` any 20-byte address, `TAIL` an **arbitrary
 > symbolic byte string** — executing `P` with a taker holding zero balance of `G` ends in
@@ -90,14 +92,38 @@ never decoded and the proof does not case-split on it.
 - **Sensitivity witness** (`control-sensitivity.k`): identical premises, correct conclusion.
   Must prove, and does. Without this the control's failure could be incidental.
 
+### T1 — the pricing is exactly the floor (`semantics/proofs/pricing-spec.k`, `#Top`)
+
+Runs the whole three-instruction program with `amountIn` and **both maker reserves symbolic**,
+and pins the quote:
+
+    amountOut * balanceIn       <= amountIn * balanceOut     (maker safety)
+    (amountOut + 1) * balanceIn >  amountIn * balanceOut     (taker safety)
+
+Together these determine `amountOut` uniquely as `floor(amountIn * balanceOut / balanceIn)`.
+Either alone is worthless — the first is satisfied by returning 0, the second by returning
+something huge.
+
+**This proves the rounding decision `LimitSwap.sol:49` documents as intentional: the sub-wei
+remainder goes to the maker on every fill.** Mutation testing had shown it was entirely
+unconstrained — switching exact-in from floor to ceiling survived the whole original suite,
+because the catalogue program's numbers divide evenly.
+
+Verified enforced rather than merely stated: substituting a false `ensures` (`?AOUT ==Int
+12345`) **fails**, with the existential unified to the computed cell contents
+`AIN *Int BB /Int BA`. The negative control reverses the maker-safety inequality and fails
+having reached `pc 91` with the real quote in the register — not the Phase 1 failure mode of
+dying at `pc 0` before any instruction ran.
+
 ## 4. What was NOT proved
 
 Everything about the money:
 
-- **Nothing about pricing.** That the ratio is computed correctly, that rounding favours the
-  maker, that exact-in and exact-out agree — modelled and conformance-tested on concrete
-  inputs, **not proved**.
+- **Nothing about the exact-out leg.** T1 covers exact-in only. The ceiling on exact-out is
+  conformance-tested, not proved. (`PHASE2.md` lists it as T2 and it is not yet written.)
 - **Nothing about the balances.** No bound relating `amountOut` to `balanceOut`.
+- **Nothing about round-trip consistency.** That quoting exact-in then exact-out cannot
+  extract value is `PHASE2.md`'s T3, a declared stretch goal, not attempted.
 - **Nothing about replay or overfill.**
 - **Nothing about the deployed bytecode.** All three instruction rules and the decode loop are
   `TESTED` — conformance agrees on the cases run — never `PROVEN`. The theorem holds *given
@@ -127,9 +153,16 @@ Current: 19 Solidity tests, 6 K conformance cases, all agreeing.
 - **Malformed argument lengths.** Solidity right-zero-pads and truncates without reverting; the
   K rules require exact lengths and now revert `UNMODELLED-ARGS-LENGTH` rather than silently
   no-opping. Loud, but not yet faithful.
-- **Arithmetic overflow is unmodelled.** `amountIn * balanceOut` is checked arithmetic in
-  Solidity and reverts on overflow; K's `Int` is unbounded and computes. Reachable with
-  attacker-chosen `amountIn`.
+- **Arithmetic overflow is unmodelled, and this qualifies T1.** `LimitSwap.sol:49` is plain
+  checked arithmetic — no `mulDiv` — so the divergence condition is exact: **K and the EVM
+  differ iff `amountIn * balanceOut >= 2^256`**, where the EVM reverts `Panic(0x11)` and K
+  computes. Below that they agree exactly.
+
+  T1's `amountIn < 2^256` hypothesis does **not** bound the product and is **inert** — the
+  claim proves without it. So T1 holds for arbitrarily large `amountIn`, over a region where
+  the EVM would revert. Since `amountIn` is taker-chosen, the divergence is reachable by
+  construction for any `balanceOut`, at `amountIn >= 2^256 / balanceOut`. Read T1 as *"given
+  the product does not overflow"*.
 - **Unmodelled opcodes are silent no-ops** in K, where production reverts `UnknownOpcode`.
   Theorems must be stated so this cannot affect the conclusion — the gate theorem is, because
   it reverts before the tail is decoded.
