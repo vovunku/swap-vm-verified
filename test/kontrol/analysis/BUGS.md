@@ -21,26 +21,44 @@ on the strength of the model alone it would have been wrong.
 
 ## Under investigation
 
-### PeggedSwap — claimed `Panic(0x11)` underflow at `:179` / `:215`
+### PeggedSwap — `Panic(0x11)` underflow at `:215`
 
-**Level: MODELLED — currently contradicted by Kontrol.**
+**Level: CONFIRMED.** Reproduced by executing the EVM, arithmetic traced wei by wei, with a
+standalone reproducer at `test/kontrol/analysis/repro/PeggedSwapUnderflowRepro.t.sol`.
 
-Claim: `ceilDiv(x_new - x0, rateIn)` underflows because the round trip
-`x0 → u → solve → u' → x_new` is not expansive, so `x_new < x0` is reachable. Measured
-threshold: clean at `x0_init <= 2e26`, first underflows at `3e26`. Claimed witness for `:215`:
-`balanceIn = 1e30 + 1`, `balanceOut = 1`, `amountOut >= 1`, `x0 = y0 = 1e30`,
-`linearWidth = 0`, `rateLt = rateGt = 1`, `tokenIn < tokenOut`.
+`PeggedSwap.sol:215` computes `Math.ceilDiv(x1 - x0, rateIn)` with a **checked** subtraction,
+where `x1` is reconstructed from `x0` through `x0 -> u -> solve -> u' -> x1`. That round trip
+is not expansive: normalisation at `PeggedSwapMath.sol:47` floors, and `solve` floors twice
+more (`:100`, `:103`). When `x0_init` is large relative to `ONE = 1e27`, one `u`-ulp is worth
+`x0_init / ONE` wei of `x0` — more than the reconstructing `ceilDiv` can add back — so
+`x1 < x0` is reachable and the subtraction reverts with a **bare `Panic(0x11)`**, not a named
+SwapVM error.
 
-Contradiction: `test_knownUnderflow_exactOutAtLargeReserves` passes under `forge test` but
-**fails under Kontrol** with `=recorded witness must revert wit: 0 != 1`, status `EVMC_REVERT`,
-path condition `#Top`. The witness does not revert as claimed under KEVM.
+Witness: `x0_init = y0_init = 1e30`, `linearWidth = 0`, `rateLt = rateGt = 1`,
+`balanceIn = 1e30 + 1`, `balanceOut = 1`, `amountOut = 1`, `tokenIn < tokenOut`. Then
+`u = 1e27` (the `+1` truncates away — one ulp here is 1000 wei), `v = 0`, `C = 1e27`,
+`y1 = 0`, `u' = solve(1e27, 0) = 1e27`, `x1 = 1e30`, so **`x1 - x0 = -1`**.
 
-Four possibilities, under investigation: the test catches a different revert than the one it
-claims (a parse-guard revert would make it pass for the wrong reason); the witness values are
-wrong but some other input triggers it; the bug is not real and the finding must be retracted;
-or revm and KEVM genuinely disagree, which would need strong evidence.
+The reproducer pins all three of: the panic itself, that `balanceIn = 1e30` exactly (one wei
+less) **succeeds**, and that a realistic `1e21` normaliser is unaffected. The discontinuity in
+a single wei is what makes this a defect rather than a documented domain limit.
 
-**Do not report this until resolved.**
+Scope: clean at `x0_init <= 2e26`, first underflows around `3e26`, widespread at `1e27`+.
+Realistic pools sit near `1e21` (`test/invariants/pegged/BalancedCurve.t.sol:17-18`), nine
+orders below — but nothing on-chain rejects a larger normaliser. `parse`
+(`PeggedSwap.sol:52-61`) checks only that `x0`, `y0` are non-zero, and the source comments at
+`:162` and `:202` contemplate `x1 <= 1e30` while enforcing nothing;
+`test/PeggedSwap.t.sol:1024` exercises `1e30` directly.
+
+Impact: programs are maker-signed, so this is maker self-harm rather than a taker attack — an
+order configured this way is silently unfillable exact-out while appearing healthy.
+
+Note on provenance, worth recording because it nearly went the other way: a Kontrol proof of
+this witness FAILED, which looked at first like evidence against the finding. It was not. The
+spec declared its error selectors `immutable`, and `run-constructor = false` makes immutables
+read as zero under Kontrol, so the selector comparison failed while the revert itself
+reproduced exactly. **A failing proof is not evidence against a bug until you have read why
+it failed.**
 
 ### PeggedSwap — maker-favouring rounding false by 1 wei
 
