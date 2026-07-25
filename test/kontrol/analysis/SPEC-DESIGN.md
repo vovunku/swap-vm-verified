@@ -478,7 +478,7 @@ opaque.
 Three ways to build one, in increasing order of fidelity and cost:
 
 **(a) Promote the value to a parameter.** This is what `XYCConcentrateHarness.exactInLeg`
-does with the virtual reserves (`:103-115`), and it is the reason Tier A is provable today.
+does with the virtual reserves (`:103-115`), and it is the reason LEG-LEVEL is provable today.
 Cheapest, most permissive (the parameter ranges over values the real code could never
 produce), and requires a differential property to close (§2.7).
 
@@ -513,7 +513,7 @@ invisible.
 ### 2.7 The transcription harness is a trust boundary
 
 `XYCConcentrateHarness._pricingLegs` (`:72-98`) is a hand transcription of
-`XYCConcentrate.sol:143-159`. Every Tier A property is therefore a theorem about the
+`XYCConcentrate.sol:143-159`. Every LEG-LEVEL property is therefore a theorem about the
 transcription, not about the instruction — a fact the harness docstring states plainly
 (`:52-55`) and which `FINDINGS.md` repeats. That honesty is the right default. What makes it
 *work* is the discharge:
@@ -1201,7 +1201,7 @@ function test_exactIn_cannotDrainPool(
 ) public view
 ```
 
-A reader of `XYCConcentrateSpec` can tell Tier A from Tier B by the parameter list alone. That
+A reader of `XYCConcentrateSpec` can tell LEG-LEVEL from FULL-INSTRUCTION by the parameter list alone. That
 is worth more than a section comment, because parameter lists survive copy-paste and section
 comments do not.
 
@@ -1484,7 +1484,7 @@ weakening the theorem silently.
 `:638` — twice on the transcribed leg and once on the real instruction. `_assertGuard`
 (`PeggedSwapSpec.t.sol:287`) is a hand-rolled special case of the same idea. Factoring these
 into `Mode`-parameterised predicates would let a single `_noDrainInvariant(Mode, …)` serve as
-Tier A postcondition, Tier B postcondition, and — once instruction composition is on the table
+LEG-LEVEL postcondition, FULL-INSTRUCTION postcondition, and — once instruction composition is on the table
 — precondition for the *next* instruction's proof. That last use is the point.
 
 Term Finance's discipline on top of it is the part people get wrong
@@ -2004,7 +2004,7 @@ first.
 **C0. The `Mode.{Assume, Try, Assert}` invariant combinator** (Lido; copied by Term Finance and
 Octant). Write each invariant once, reuse it as precondition, probe and postcondition. It is
 the de facto standard Kontrol idiom, it subsumes our hand-rolled `_assertGuard`, it removes the
-duplication between `XYCConcentrateSpec`'s Tier A and Tier B statements of the same predicate,
+duplication between `XYCConcentrateSpec`'s LEG-LEVEL and FULL-INSTRUCTION statements of the same predicate,
 and it is the prerequisite for ever composing per-instruction results into a VM-level argument.
 Adopt with Term Finance's discipline attached: **assert the invariants your setup establishes,
 assume only genuine induction hypotheses.** (§8.1)
@@ -2045,7 +2045,7 @@ proof. Makes a performance regression visible in review, which `PROOF-MAP.md` ca
    a one-flag experiment on a stalled proof and nobody has tried it.
 
 6. **`--step-timeout N`** — on timeout the backend halves the execution depth and retries.
-   Precisely the tool for the `PeggedSwap` sqrt goals and `XYCConcentrate` Tier B, which stall
+   Precisely the tool for the `PeggedSwap` sqrt goals and `XYCConcentrate` FULL-INSTRUCTION, which stall
    inside one enormous step rather than failing.
 
 7. **`kontrol minimize-proof <proof> --merge`** — node merging "pushes splits down" through the
@@ -2111,7 +2111,7 @@ vm.assume(a - r * r < 2 * r + 1);
 — introduces the symbol, keeps `Math.sqrt`'s ~128 paths and six Newton `DIV`s off the
 execution path entirely, and lands squarely on `lemmas.k` Section 7 (symbolic squares), which
 is already compiled in and unexercised. It unblocks PeggedSwap Groups E/F and XYCConcentrate
-Tier B in one move.
+FULL-INSTRUCTION in one move.
 
 It is a trust boundary — the axioms are assumed, not proven — and must be declared as one. But
 "conditional on OZ `Math.sqrt` satisfying `r² ≤ a < (r+1)²`" is a far smaller assumption than

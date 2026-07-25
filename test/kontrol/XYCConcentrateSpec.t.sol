@@ -61,13 +61,13 @@ import { XYCConcentrateHarness } from "./harnesses/XYCConcentrateHarness.sol";
 ///
 ///      The file is therefore split in two:
 ///
-///        * **Tier A** — properties of the pricing legs alone, stated against
+///        * **LEG-LEVEL** — properties of the pricing legs alone, stated against
 ///          `XYCConcentrateHarness.exactInLeg` / `exactOutLeg`, which take the two virtual
 ///          reserves as scalar parameters. `_computeL` is not on the execution path, and
 ///          what remains is one `MUL`, one `DIV` and one `Math.ceilDiv` per leg — exactly
 ///          the `XYCSwap` arithmetic that is already proven. These are expected to prove.
 ///
-///        * **Tier B** — guards, orientation and the differential tests that ground Tier A
+///        * **FULL-INSTRUCTION** — guards, orientation and the differential tests that ground LEG-LEVEL
 ///          against the real instruction. Every one of these routes through `_computeL` and
 ///          is expected to remain `PENDING` until the `mul512` lemma lands. They are
 ///          written now so that landing the lemma is a `kontrol prove` away rather than a
@@ -96,7 +96,7 @@ contract XYCConcentrateSpec is Test {
     }
 
     // =======================================================================
-    // Tier A — the pricing legs, with virtual reserves as scalars
+    // LEG-LEVEL — the pricing legs, with virtual reserves as scalars
     //
     // `_computeL` is off the execution path for every test in this section.
     // =======================================================================
@@ -521,7 +521,7 @@ contract XYCConcentrateSpec is Test {
     }
 
     // =======================================================================
-    // Tier B — properties routed through `_computeL`
+    // FULL-INSTRUCTION — properties routed through `_computeL`
     //
     // Every test below reaches `Math.mulDiv`, and so `Math.mul512`/`mulmod`. Expected to
     // stay PENDING under Kontrol until the mul512-collapse lemma lands; they pass as fuzz
@@ -609,7 +609,7 @@ contract XYCConcentrateSpec is Test {
     /// @notice The real instruction never returns more than the maker's output balance, in
     ///         either direction, for any price bounds whatsoever.
     /// @dev Fully unconstrained: both price bounds are free `uint256`s, so inverted or
-    ///      degenerate bands are in scope and simply land in the `catch`. This is the Tier-B
+    ///      degenerate bands are in scope and simply land in the `catch`. This is the FULL-INSTRUCTION
     ///      companion to `test_exactIn_cannotDrainPool` and the property that actually
     ///      matters for maker safety, since it is stated about bytecode rather than about a
     ///      transcription.
@@ -708,15 +708,15 @@ contract XYCConcentrateSpec is Test {
     }
 
     // -----------------------------------------------------------------------
-    // Differential: the Tier-A transcription against the real instruction
+    // Differential: the LEG-LEVEL transcription against the real instruction
     // -----------------------------------------------------------------------
 
     /// @notice The exact-in pricing leg, fed the real instruction's virtual reserves,
     ///         reproduces the real instruction register for register.
     ///
-    /// @dev This is the trust boundary for the whole Tier-A section.
+    /// @dev This is the trust boundary for the whole LEG-LEVEL section.
     ///      `XYCConcentrateHarness.exactInLeg` is a *transcription* of `:143-159`, and every
-    ///      Tier-A property is a property of that transcription. This test is what makes
+    ///      LEG-LEVEL property is a property of that transcription. This test is what makes
     ///      them properties of `XYCConcentrate`.
     ///
     ///      The leg call sits inside the `try` on purpose: if `full` succeeded then the leg

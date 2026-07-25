@@ -262,7 +262,7 @@ close, which assert that `full(...)` and `exactInLeg(virtualReserves(...))` agre
 register-for-register.
 
 **Treat closing the diff proofs as the completion criterion for XYCConcentrate, not as a
-nice-to-have.** They are gated on the same `mul512` lemma as the rest of Tier B.
+nice-to-have.** They are gated on the same `mul512` lemma as the rest of FULL-INSTRUCTION.
 
 The harness author verified the split two ways rather than asserting it: structurally (no
 call, no `using`, no function pointer can reach `_computeL` from the legs) and by gas

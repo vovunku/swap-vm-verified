@@ -29,7 +29,7 @@ import { XYCConcentrate, XYCConcentrateArgsBuilder, ONE } from "../../../src/ins
 ///      So the harness offers three entrypoints, in decreasing order of provability and
 ///      increasing order of fidelity:
 ///
-///        1. `exactInLeg` / `exactOutLeg` — **Tier A**. A line-for-line transcription of
+///        1. `exactInLeg` / `exactOutLeg` — **LEG-LEVEL**. A line-for-line transcription of
 ///           `:143-159` with the two virtual reserves promoted to scalar parameters. The
 ///           only edits are `ctx.swap.` -> `swap.`, `ctx.query.isExactIn` -> `isExactIn`,
 ///           the two `virtualBalance*` locals becoming parameters, and a returned `clamped`
@@ -55,7 +55,7 @@ import { XYCConcentrate, XYCConcentrateArgsBuilder, ONE } from "../../../src/ins
 ///      agree register-for-register. Read that as part of the harness.
 contract XYCConcentrateHarness is XYCConcentrate {
     // -----------------------------------------------------------------------
-    // Surface 1 — Tier A: the pricing legs, virtual reserves as scalars
+    // Surface 1 — LEG-LEVEL: the pricing legs, virtual reserves as scalars
     // -----------------------------------------------------------------------
 
     /// @notice Transcription of `XYCConcentrate.sol:143-159`.

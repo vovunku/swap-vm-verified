@@ -23,6 +23,15 @@ docker exec kontrol bash -c "cd /home/user/swap-vm-verified && su user -c \
 Note the `su user -c` form. `docker exec -u user … kontrol list` returns empty output silently
 on this host, which has twice been mistaken for lost proof state.
 
+> **Naming.** "Track A" and "Track B" are the split of work between the two people on this
+> project — Track A is `Controls`, `MinRate`, `Balances`, `LimitSwap`; Track B is `XYCSwap`,
+> `PeggedSwap`, `XYCConcentrate`, `PiecewiseLinearScale`, `Power`. Nothing else uses A/B.
+>
+> `XYCConcentrate`'s internal difficulty split was previously also called "leg-level/B", which
+> collided with that and caused real confusion. It is now **leg-level** (properties provable
+> with `_computeL` kept off the execution path) versus **full-instruction** (properties routed
+> through it). Do not reintroduce "tier" for anything.
+
 Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted · **X** excluded
 
 ---
@@ -37,7 +46,7 @@ fix, the performance config change, and the `isqrt` seam.*
 | XYCSwap | 12 | 6 | 4 new properties now in the definition, unattempted |
 | PiecewiseLinearScale | 31 | 6 | `--bmc-depth 51` gives a complete result |
 | PeggedSwap | 38 | 1 | +7 seam properties; 19 need `--reinit` |
-| XYCConcentrate | 21 | 1 | Tier B gated on `mul512`, now un-dead |
+| XYCConcentrate | 21 | 1 | FULL-INSTRUCTION gated on `mul512`, now un-dead |
 | Power | 31 | 0 | In the definition for the first time |
 | **Track B total** | **133** | **14** | |
 
@@ -97,17 +106,17 @@ recompute guard; D up to four but discharged from the path condition alone (~2^2
 **E needs sqrt-value reasoning and cannot prove without the seam**; F is ~2^56 paths.
 
 ### XYCConcentrate — 1 / 21
-Tier A keeps `_computeL` off the path by taking virtual reserves as scalars — verified both
+LEG-LEVEL keeps `_computeL` off the path by taking virtual reserves as scalars — verified both
 structurally and by gas measurement (legs' max 1,327 below `full`'s min 1,862).
 
-Tier B is blocked on **two** things: the `mul512` collapse (dead until the
+FULL-INSTRUCTION is blocked on **two** things: the `mul512` collapse (dead until the
 `preserves-definedness` fix, so every attempt so far ran without it) **and** an `isqrt` seam,
 since `_computeL` calls `Math.sqrt(disc)` with `disc` fully symbolic. `test_full_cannotDrainPool`
 additionally cannot close via `mul512` even in principle — its price bounds are free
 `uint256`s, so the 512-bit path is genuinely reachable. That one is a specification-domain
 problem.
 
-**Completion criterion: the two `test_diff_*` properties.** Until they close, every Tier A
+**Completion criterion: the two `test_diff_*` properties.** Until they close, every LEG-LEVEL
 result is a theorem about a hand transcription rather than about `XYCConcentrate`.
 
 ### PiecewiseLinearScale — 4 / 31
@@ -125,13 +134,13 @@ need a loop invariant rather than a larger depth.
 
 ## Blockers, ranked by properties unblocked
 
-1. **`isqrt` seam** — gates PeggedSwap Groups E/F and all of XYCConcentrate Tier B. Now known
+1. **`isqrt` seam** — gates PeggedSwap Groups E/F and all of XYCConcentrate FULL-INSTRUCTION. Now known
    to need a **harness seam, not a lemma**: `Math.sqrt` is inlined, `--cse` provably cannot
    see it (`find_function_calls` drops library member accesses), and `--lemmas` cannot declare
    a new symbol. The route is `kevm.freshUInt` plus paired `vm.assume` bounds at the call
    site, landing on the Section 7 symbolic-square rules already compiled in. **In progress.**
 2. **Re-proving after the `preserves-definedness` fix** — the `mul512` rules were dead until
-   this build, so every XYCConcentrate Tier B attempt so far was made without them.
+   this build, so every XYCConcentrate FULL-INSTRUCTION attempt so far was made without them.
 3. **The 19 PeggedSwap properties needing `--reinit`** after the immutable→accessor fix, 7 of
    which previously reported a vacuous PASS.
 4. **`_selectorOf` returning 0 on short revert data** — reintroduces the same vacuity for
