@@ -19,6 +19,7 @@ each one. See `PLAN.md` §5a for the model.
 | `0x90` | `StaticBalances` | `Balances.sol:37-47` | `TESTED` | `InstructionConformance.t.sol` (both orientations) |
 | `0x53` | `LimitSwap` | `LimitSwap.sol:_limitSwap1D` | `TESTED` | K cases `revPrices`/`revRecompute`/`revRecomputeOut` + `InstructionConformance.t.sol` |
 | `0x42` | `InvalidateTokenOut` | `Invalidators.sol:122-135` | `ADMITTED` | K concrete claims `proofs/invalidatetokenout-concrete.k` (3 arms, all `#Top`; negative control fails) — Solidity-side `InstructionConformance.t.sol` case NOT yet added |
+| `0x50` | `XYCSwap` | `XYCSwap.sol:_xycSwapXD` | `ADMITTED` | K concrete claims `proofs/xycswap-concrete.k` (4 arms incl. ceiling, all `#Top`; negative control — flat vs constant-product curve — fails) — Solidity-side `InstructionConformance.t.sol` case NOT yet added |
 
 ## DEFECT D-1 — FIXED. `0x53` diverged on reversed token order
 

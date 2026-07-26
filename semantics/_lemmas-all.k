@@ -1,5 +1,6 @@
 requires "opcodes/whitelists.k"
 requires "opcodes/invalidatetokenout.k"
+requires "opcodes/xycswap.k"
 requires "opcodes/jumps.k"
 requires "opcodes/privateorder.k"
 requires "opcodes/txorigin.k"
@@ -37,6 +38,7 @@ module SWAPVM-BYTES-LEMMAS
   imports SWAPVM-JUMPS
   imports SWAPVM-WHITELISTS
   imports SWAPVM-INVALIDATETOKENOUT
+  imports SWAPVM-XYCSWAP
 
   // Length of a concatenation. Definitional.
   rule lengthBytes(B1 +Bytes B2) => lengthBytes(B1) +Int lengthBytes(B2)
