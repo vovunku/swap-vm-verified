@@ -35,21 +35,22 @@ at `<pc> = 7` after decode. Neither arm of the Deadline rule touches `<pc>` — 
 inherited from the decode advance and left alone, exactly as the Revert and Salt rules do. This is
 the correct posture for an opcode whose Solidity never calls `setNextPC`.
 
-The rule has three arms. The REVERT arm and PASS arm split on the Bool predicate
-`#deadlineExceeded(DEADLINE)` (see "Arm selection" below for why a Bool predicate rather than the
-direct `#blockTimestamp() >Int DEADLINE` comparison); the `UNMODELLED-ARGS-LENGTH` arm catches
-every non-canonical args length (see "Pad-and-truncate soundness hazard").
+The rule has three arms. The REVERT arm and PASS arm split on the DIRECT comparison
+`#blockTimestamp() >Int DL` vs `#blockTimestamp() <=Int DL` — the Solidity-faithful form, no
+Bool predicate intermediary (see "Direct form, concrete conformance" below for why the earlier
+predicate form was abandoned); the `UNMODELLED-ARGS-LENGTH` arm catches every non-canonical args
+length (see "Pad-and-truncate soundness hazard").
 
 ```k
 rule <k> #exec ( 32 , ARGS ) => #revert("DeadlineReached") ... </k>
      <status> Running </status>
   requires lengthBytes(ARGS) ==Int 5
-   andBool #deadlineExceeded(Bytes2Int(ARGS, BE, Unsigned))
+   andBool #blockTimestamp() >Int Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)
 
 rule <k> #exec ( 32 , ARGS ) => .K ... </k>
      <status> Running </status>
   requires lengthBytes(ARGS) ==Int 5
-   andBool notBool #deadlineExceeded(Bytes2Int(ARGS, BE, Unsigned))
+   andBool #blockTimestamp() <=Int Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)
 ```
 
 The REVERT arm produces `#revert("DeadlineReached")`, which by `swapvm.md:154-156` clears the
@@ -57,75 +58,65 @@ continuation and sets `<status> Reverted("DeadlineReached")`. The loop never res
 in the program is unconsumed. The PASS arm leaves `#run` in `<k>` and the loop proceeds to decode
 the next instruction — the same posture as Salt (`opcodes/salt.k`).
 
-The truncation to 40 bits is automatic in the modelled case: `Bytes2Int(ARGS, BE, Unsigned)` on
-a 5-byte ARGS yields exactly the integer in `[0, 2^40 - 1]` — there is no higher byte to truncate
-away. No separate `modInt 2^40` is required.
+The truncation to 40 bits is automatic in the modelled case: `Bytes2Int(substrBytes(ARGS, 0, 5),
+BE, Unsigned)` on a 5-byte ARGS yields exactly the integer in `[0, 2^40 - 1]` — there is no
+higher byte to truncate away. No separate `modInt 2^40` is required.
 
-## Why the rule reads `Bytes2Int(ARGS, ...)` instead of `Bytes2Int(substrBytes(ARGS, 0, 5), ...)`
+## Why the rule reads `Bytes2Int(substrBytes(ARGS, 0, 5), ...)`
 
-The Solidity is `uint40(bytes5(args))` — a 5-byte read. The K rule reads the **whole** ARGS
-(`Bytes2Int(ARGS, BE, Unsigned)`), not a substr. The two are semantically equivalent under the
-rule's `lengthBytes(ARGS) ==Int 5` side condition (if ARGS is exactly 5 bytes, reading all of it
-is the same as reading its first 5 bytes), and the no-substr form matches the gate rule's pattern
-at `swapvm.md:187` — the gate reads `Bytes2Int(ARGS, BE, Unsigned)`, not a substr, even though the
-Solidity there is `address(bytes20(args))` (a 20-byte read).
+The Solidity is `uint40(bytes5(args))` — a 5-byte read of the FIRST 5 bytes of `args`. The K
+rule mirrors this exactly with `Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)`. Under the
+rule's `lengthBytes(ARGS) ==Int 5` side condition this is equivalent to reading the whole ARGS
+(`Bytes2Int(ARGS, BE, Unsigned)`); the substr form is preferred so the rule text matches the
+Solidity `bytes5(args)` read one-for-one.
 
-The reason to prefer the no-substr form is the round-trip lemma (`lemmas.k:64-67`):
-`Bytes2Int(Int2Bytes(N, V, BE), BE, Unsigned)` rewrites to `V` in one step. With a substr, the
-double substr (the decode rule extracts ARGS as `substrBytes(PGM, ...)` and the rule would take
-`substrBytes(ARGS, 0, 5)`) needs several chained rewrites before the round-trip can fire, and the
-extra steps make arm selection less predictable. The no-substr form is what the gate uses and what
-this rule uses.
+The earlier predicate-form rule used the no-substr form `Bytes2Int(ARGS, BE, Unsigned)` to match
+the gate rule's pattern at `swapvm.md:187` and to fire the round-trip lemma in one step. With the
+switch to direct comparison, the rule reduces via the bytes simplifications in `lemmas.k` either
+way, and the Solidity-mirroring substr form is the clearer choice.
 
-Jump (`opcodes/jump.k`) uses the substr form `Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned)`.
-That is fine for Jump because Jump has only **one arm** — there is no sibling arm whose side
-condition must be refuted, so the timing of the bytes reduction does not affect arm selection.
+Jump (`opcodes/jump.k`) uses the same substr form `Bytes2Int(substrBytes(ARGS, 0, 2), BE,
+Unsigned)` for its 2-byte read. The Deadline substr here is the same pattern at width 5.
 
-## Arm selection — why `#deadlineExceeded(DL)` and not `#blockTimestamp() >Int DL`
+## Direct form, concrete conformance — why the predicate `#deadlineExceeded(DL)` was removed
 
-`block.timestamp` is an external environment input (no on-chain state for the VM to consult), so
-per `PLAN.md` D4 it is abstracted. The natural abstraction is an uninterpreted function
-`#blockTimestamp()` (declared here, per the task brief), and the natural Solidity-faithful rule
-form branches on `#blockTimestamp() >Int DEADLINE` vs `#blockTimestamp() <=Int DEADLINE`. A spec
-premise `#blockTimestamp() >Int DL` OUGHT to select the REVERT arm by contradicting the PASS arm.
+The earlier version of this rule (and of `proofs/deadline-spec.k` / `proofs/deadline-control.k`)
+branched on a Bool predicate `#deadlineExceeded(DL)` (conceptually
+`#blockTimestamp() >Int DL`), keeping `#blockTimestamp()` declared but unused in the rule. The
+motivation was that a SYMBOLIC universal claim `for all DL, premise implies Reverted` did not
+prove against a direct-comparison rule whose arms compared an uninterpreted function to a
+SYMBOLIC value: the K Haskell backend (v7.1.337, the toolchain in this repo) does not propagate
+an inequality premise on an uninterpreted-vs-symbolic comparison into a refutation of the
+opposite arm of a two-arm rule. With the direct-comparison rule, a spec whose premise pinned
+`#blockTimestamp() >Int DL` still explored the `<=Int DL` PASS arm; the PASS arm did not halt,
+the loop ran into a symbolic tail, and the all-path claim stalled with 20+ unexplored branches.
+(The same arm-selection limitation was hit by the gte opcode — see `opcodes/gte.md`.) The gate
+rule (`swapvm.md:182-193`) avoided this because its arms compared `#balanceOf(...)` to a
+**constant** (`>Int 0` vs `<=Int 0`), and constant reasoning IS propagated.
 
-**Empirically it does not, in this backend.** The K Haskell backend (v7.1.337, the toolchain in
-this repo) does not propagate an inequality premise on an uninterpreted-vs-symbolic comparison
-into a refutation of the opposite arm of a two-arm rule. So with the direct-comparison rule, a
-spec whose premise pins `#blockTimestamp() >Int DL` still explores the `<=Int DL` PASS arm; the
-PASS arm does not halt, the loop runs into a symbolic tail, and the all-path claim stalls with 20+
-unexplored branches. The minimal diagnostic is in "Diagnostic" below.
+The fix then was to abstract the comparison into a Bool predicate so a spec premise
+`#deadlineExceeded(DL)` (implicitly `==Bool true`) selected the REVERT arm directly — and the
+symbolic claim proved (`#Top`). **But the proof was TAUTOLOGICAL**: the spec assumed
+`#deadlineExceeded(DL)` as a premise and the rule branched on the same predicate, so the proof
+established nothing about whether the underlying `>` / `<=` matched Solidity. Worse, krun could
+not reduce the predicate (it is uninterpreted), so there was NO conformance evidence at all —
+symbolic universality bought at the cost of zero real verification.
 
-The gate rule (`swapvm.md:182-193`) avoids this because its arms compare `#balanceOf(...)` to a
-**constant** (`>Int 0` vs `<=Int 0`), not a symbolic value. Constant reasoning IS propagated:
-given `#balanceOf(...) ==Int 0`, the SMT solver refutes `>Int 0` immediately. The deadline
-comparison is to a **symbolic** `DEADLINE`, and that case is not handled.
+The current rule abandons the predicate and branches on the DIRECT comparison
+`#blockTimestamp() >Int DL` / `<=Int DL`. This makes the rule Solidity-faithful by construction:
+the comparison the rule makes IS the comparison Solidity makes, no abstraction layer in between.
+The cost is that the symbolic universal claim no longer proves — the same arm-selection
+limitation returns. The compensation is that CONCRETE claims now provide REAL conformance
+evidence: with both `#blockTimestamp()` (fixed by a premise, e.g.
+`requires #blockTimestamp() ==Int 100`) and DL concrete Ints, the SMT solver decides `>Int` /
+`<=Int` directly and arm selection is immediate. The two scenarios in `proofs/deadline-concrete.k`
+verify the actual comparison against Solidity for fixed inputs — exactly the verification the
+predicate-form symbolic proof could never provide.
 
-The fix is to abstract the comparison itself into a Bool predicate:
+### Diagnostic (historical)
 
-```k
-syntax Bool ::= #deadlineExceeded ( Int ) [function, no-evaluators]
-```
-
-conceptually `#deadlineExceeded(DL) == (#blockTimestamp() >Int DL)`, and branch on the Bool. The
-REVERT arm then requires `#deadlineExceeded(DL)` and the PASS arm requires
-`notBool #deadlineExceeded(DL)`. A spec premise `#deadlineExceeded(DL)` (implicitly `==Bool true`)
-selects the REVERT arm exactly as `#balanceOf(...) ==Int 0` selects the gate's REVERT arm — a
-direct Bool match that the SMT solver decides on without needing to reason through an inequality
-on an uninterpreted function.
-
-Both `#blockTimestamp()` and `#deadlineExceeded(DL)` are uninterpreted, both honour D4, and
-neither is a cell. They are kept as independent symbols: no simplification rule equates
-`#deadlineExceeded(DL)` with `#blockTimestamp() >Int DL`, because if it did, the rule's side
-condition would simplify back to the direct comparison and the arm-selection problem would
-return. A spec that wants to reason about the timestamp directly can still use `#blockTimestamp()`
-in premises about other properties (e.g. "the timestamp is non-negative"); for the
-deadline-revert property specifically, the premise goes through `#deadlineExceeded`.
-
-### Diagnostic
-
-The behaviour was isolated with a minimal reproducer that strips away all the decode and bytes
-machinery. A fake opcode `200` with a 1-byte arg, three rules:
+The arm-selection limitation was isolated with a minimal reproducer that stripped away all the
+decode and bytes machinery. A fake opcode `200` with a 1-byte arg, two rules:
 
 ```k
 syntax Int ::= #testVal ( Int ) [function, no-evaluators]
@@ -148,9 +139,9 @@ The identical shape but with arms `#testVal(0) >Int Bytes2Int(...)` vs `<=Int By
 and premise `#testVal(0) >Int X` — **FAILS**. Comparison to a symbolic value, premise as an
 inequality. The PASS arm is explored and the proof stalls.
 
-The identical shape but with a Bool predicate
-`#deadlineExceeded(Bytes2Int(ARGS, BE, Unsigned))` vs `notBool ...` and premise
-`#deadlineExceeded(X)` — **PROVES** (`#Top`). This is the structure the Deadline rule adopts.
+That is the limitation the current direct-form rule lives with: a symbolic universal claim over
+arbitrary DL does not prove. The concrete claims in `proofs/deadline-concrete.k` are unaffected
+and ARE the conformance evidence.
 
 The reproducer was run in-tree (in `opcodes/` and `proofs/`, then removed) against the same
 kompiled definition shape the real proof uses, so the result is on the same backend, not a toy.
@@ -204,45 +195,41 @@ and `opcodes/salt.md` "Integration" for the same constraint.) This file uses
 `requires "../swapvm.md"` — resolving relative to its own directory — so it kompiles correctly
 when invoked as `kompile ... lemmas.k` from `semantics/` without an `-I` flag.
 
-And in `semantics/run-proofs.sh`, add two entries to `SPECS`:
+And in `semantics/run-proofs.sh`, add an entry to `SPECS`:
 
 ```
-'deadline-spec|prove'           # Deadline reverts when block.timestamp > deadline, any tail
-'deadline-control|fail'         # same premises, asserts Running — must fail
+'deadline-concrete|prove'      # Deadline concrete conformance: REVERT (ts 100 > dl 50), PASS (ts 50 <= dl 100)
 ```
 
 ## Fidelity gaps (declared per `PLAN.md` D3, D4, D5)
 
 - **`block.timestamp` is abstract, not a concrete env cell.** Per D4, `block.timestamp` is
-  modelled as TWO uninterpreted symbols, both declared in `deadline.k`:
+  modelled as ONE uninterpreted symbol, declared in `deadline.k`:
   - `#blockTimestamp()` — a nullary total function (`[function, no-evaluators]`), the direct
     abstraction of the chain's `block.timestamp`. No defining rule, no cell. Its value is
-    fixed-but-unknown, constrained only by spec premises. This is the symbol the task brief asked
-    for; it is available for any spec that wants to reason about the timestamp directly.
-  - `#deadlineExceeded(DL)` — a Bool predicate (`[function, no-evaluators]`) that the RULE
-    branches on, conceptually `#blockTimestamp() >Int DL`. Required because the direct
-    `#blockTimestamp() >Int DEADLINE` comparison in a two-arm rule cannot have its arm selection
-    driven by an inequality premise in this backend (see "Arm selection"). The two symbols are
-    kept independent (no equational simplification between them) so the arm-selection condition
-    stays decidable for the SMT solver.
+    fixed-but-unknown, constrained only by spec premises. The rule branches on
+    `#blockTimestamp() >Int DL` / `<=Int DL` directly; concrete claims fix the value via a
+    premise (e.g. `requires #blockTimestamp() ==Int 100`) and prove cleanly. This is the only
+    symbol the current rule uses — the earlier `#deadlineExceeded(DL)` Bool predicate has been
+    removed (see "Direct form, concrete conformance").
 
   Adding a `<timestamp>` cell to `swapvm.md` was explicitly out of scope (six sibling subagents
-  depend on `swapvm.md` being untouched); these local declarations achieve the abstraction without
+  depend on `swapvm.md` being untouched); this local declaration achieves the abstraction without
   that coordination cost. The pattern is the same one `#balanceOf` uses for the ERC-20 balance
   oracle in `gate-spec.k:26`.
 - **`#blockTimestamp()` is opaque across calls.** The uninterpreted-function model says nothing
   about whether two calls in the same VM run return the same value. In production they do — the
   EVM fixes `block.timestamp` for an entire transaction. The model is strictly weaker. This is
-  irrelevant for any proof that mentions `#blockTimestamp()` at most once (the Deadline theorems
+  irrelevant for any proof that mentions `#blockTimestamp()` at most once (the Deadline claims
   do), and it is the right strength for an abstraction boundary: a stronger claim would have to
   be discharged against the EVM, which is out of scope for SwapVM.
-- **`#deadlineExceeded(DL)` does not reduce to `#blockTimestamp() >Int DL`.** Conceptually the
-  two are equal, but the model deliberately provides no simplification rule equating them, because
-  doing so would re-introduce the arm-selection problem this whole structure exists to avoid
-  (see "Arm selection"). A spec that constrains both symbols independently (e.g.
-  `#blockTimestamp() >Int DL` AND `#deadlineExceeded(DL)`) is making two uncorrelated claims
-  about two uninterpreted symbols; if a future proof needs them correlated, that is a lemma to add
-  then, with the arm-selection consequence worked out.
+- **Symbolic universal claim does not prove (arm-selection limitation).** The direct-comparison
+  rule (`#blockTimestamp() >Int DL` vs `<=Int DL`) does not admit a symbolic universal claim
+  over arbitrary DL in this backend (see "Direct form, concrete conformance"). This is the
+  deliberate trade-off for real conformance evidence via concrete claims. A future fix would
+  require either a `<timestamp>` cell with a value the prover can reason about generically, or
+  an SMT encoding that propagates inequality premises on uninterpreted-vs-symbolic comparisons
+  into arm refutations — both out of scope here.
 - **Non-canonical args unmodelled.** Solidity right-pads short `args` and truncates long ones
   without reverting; the model reverts with `"UNMODELLED-ARGS-LENGTH"` for any `args.length`
   other than 5. This makes the gap loud rather than silent (`swapvm.md:314-316`), in the same safe
@@ -254,7 +241,9 @@ And in `semantics/run-proofs.sh`, add two entries to `SPECS`:
   `"DeadlineReached"`. The fidelity gap — the real VM's revert data carries taker and deadline,
   K's does not — mirrors the same gap declared in `opcodes/revert.k` for `InstructionRevert`.
 - **`ADMITTED`.** Per the trust model in `PLAN.md` §5a, every instruction rule starts `ADMITTED`.
-  This one is not yet exercised by the conformance harness.
+  This one is exercised by the concrete conformance claims in `proofs/deadline-concrete.k`
+  (REVERT and PASS arms) but not by a symbolic universal claim, which does not prove in this form
+  (see above).
 
 ## Composition
 
@@ -262,16 +251,20 @@ Deadline is **unlike** the gate (`proofs/gate-spec.k`) on the PASS arm and **lik
 REVERT arm:
 
 - The REVERT arm halts: `#revert` clears the continuation (`swapvm.md:154-156`), so any tail in
-  the program is unconsumed. A positive claim can quantify over an arbitrary symbolic `TAIL`
-  exactly as `gate-spec.k` does. This is what `proofs/deadline-spec.k` does — it pins the
-  premise `#deadlineExceeded(DL)` to select the REVERT arm, then quantifies over `TAIL`.
+  the program is unconsumed. A positive claim COULD quantify over an arbitrary symbolic `TAIL`
+  exactly as `gate-spec.k` does — except that the direct-comparison rule does not admit a symbolic
+  universal claim over arbitrary DL in this backend (see "Direct form, concrete conformance").
+  The concrete REVERT claim in `proofs/deadline-concrete.k` instead fixes DL=50 and
+  `#blockTimestamp()=100` and asserts the exact revert outcome.
 - The PASS arm does not halt: it leaves `#run` in `<k>`, so the loop proceeds to decode the byte
   at the next `<pc>`. An arbitrary symbolic tail therefore cannot be the basis of a clean
   terminating claim, for the same reason it cannot in `salt-spec.k` and `jump-spec.k`: with a
   symbolic tail the first byte of the tail is symbolic and no decode rule reduces, so the prover
-  gets stuck with a residual indistinguishable from a false claim's (the failure mode that sank
-  the first `negative-control.k` — `proofs/README.md:27-34`). A PASS-arm positive claim must
-  instead terminate concretely, e.g. by making the program exactly the 7-byte Deadline and letting
-  the loop-exit rule (`swapvm.md:100-105`) fire when `<pc> = 7 >= lengthBytes(PGM)`. The minimum
-  positive claim here covers the REVERT arm only; a PASS-arm twin is sketched but not added to
-  keep the spec tight.
+  gets stuck with a residual indistinguishable from a false claim's. The concrete PASS claim in
+  `proofs/deadline-concrete.k` instead makes the program exactly the 7-byte Deadline and lets the
+  loop-exit rule (`swapvm.md:100-105`) fire when `<pc> = 7 >= lengthBytes(PGM)`, fixing DL=100 and
+  `#blockTimestamp()=50`.
+
+So both arms of the current rule are exercised only by concrete claims, not symbolic ones. The
+symbolic-universal story awaits either a `<timestamp>` cell or an SMT-side fix to the
+arm-selection limitation (see "Fidelity gaps").
