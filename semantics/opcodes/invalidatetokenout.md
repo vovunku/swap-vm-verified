@@ -142,11 +142,14 @@ move this opcode from `ADMITTED` to `TESTED` in `axioms.md`.
   write is therefore unconditional in the model. Correct for swap-mode reasoning and for the
   no-replay / no-overfill properties the opcode exists to enforce; the quote-only
   check-without-write path is out of scope, not contradicted.
-- **Arithmetic overflow not modelled.** `prefilled + amountOut` is Solidity 0.8 checked
-  `uint256` addition (`Panic(0x11)` on wraparound); the model uses unbounded `+Int`. They
-  diverge only at `prefilled + amountOut >= 2^256`, unreachable for real token balances (the
-  require bounds `newFilled` to `balanceOut`, a uint256). Both engines revert in that region;
-  only the reason differs. Same caveat T1 carries for `LimitSwap` multiplication (axioms.md).
+- **Arithmetic overflow — reachable, reason diverges.** `prefilled + amountOut` is Solidity
+  0.8 checked `uint256` addition (`Panic(0x11)` on wraparound); the model uses unbounded
+  `+Int`, so the overfill arm fires with reason `InvalidatorsTokenOutExceeded` where the chain
+  reverts `Panic(0x11)`. This is **not** unreachable: the public `invalidateTokenOut(...)`
+  (`Invalidators.sol:72-76`) — the standard order-cancellation path — sets the counter to
+  `type(uint256).max`; after a cancel, every subsequent fill reverts the checked add. Both
+  engines revert (correct soundness direction), but the model's revert **reason** is wrong on
+  an ordinary, reachable path, and any theorem stated about the reason here is wrong too.
 - **Symbolic universal claim not attempted.** Following the documented arm-selection limitation
   (opcodes/gte.md "Arm selection", opcodes/deadline.md:125-156) — `#prefilledOut` involves an
   uninterpreted-vs-symbolic comparison that the K Haskell backend does not propagate into an

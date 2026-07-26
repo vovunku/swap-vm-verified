@@ -42,18 +42,21 @@ advanced. XYCSwap neither reads nor writes `<pc>` beyond that: it writes exactly
 
 ## What the K rule does
 
-Six rules in `opcodes/xycswap.k`:
+Seven rules in `opcodes/xycswap.k`:
 
 1. **`xycQuoteOut`** `[function]` — the exact-in formula, definitional rule.
 2. **`xycQuoteIn`** `[function]` — the exact-out formula, reusing `#ceilDiv` (swapvm.md:237-245).
 3. **Guard 1** — `balanceIn <= 0 || balanceOut <= 0` → revert `XYCSwapRequiresBothBalancesNonZero`.
 4. **Exact-in recompute** — `amountOut =/=Int 0` → revert `XYCSwapRecomputeDetected`.
 5. **Exact-in pricing** — write `<amountOut>` with `xycQuoteOut`.
-6. **Exact-out recompute + pricing** — the `<isExactIn> false` twins of 4/5.
+6. **Exact-out recompute + guard 3** — the `<isExactIn> false` recompute twin, plus the
+   `balanceOut <= amountOut` revert (`XYCSwapAmountOutExceedsBalanceOut`) mirroring the EVM
+   underflow / div-by-zero Panic.
+7. **Exact-out pricing** — write `<amountIn>` with `xycQuoteIn`, guarded by `BOUT >Int AOUT`.
 
 The arms are pairwise disjoint: guard 1 vs the rest on the balance sign; exact-in vs exact-out on
 the `<isExactIn>` cell; recompute vs pricing on `amountOut` (resp. `amountIn`) `==Int 0` vs
-`=/=Int 0`.
+`=/=Int 0`; exact-out guard 3 vs pricing on `BOUT <=Int AOUT` vs `BOUT >Int AOUT`.
 
 ## PLAN.md D2 — arithmetic through a named symbol
 
@@ -83,7 +86,7 @@ Both round toward the maker's advantage.
 
 ## Conformance
 
-`proofs/xycswap-concrete.k` — four concrete claims, all proving (`#Top` under `kprove`):
+`proofs/xycswap-concrete.k` — five concrete claims, all proving (`#Top` under `kprove`):
 
 | Scenario | Arm | Inputs | Result |
 |---|---|---|---|
@@ -91,6 +94,7 @@ Both round toward the maker's advantage.
 | B — exact-out pricing | exact-out price (ceiling) | out 30, reserves 100/100 | `amountIn => 43` (NOT 42) |
 | C — balances-zero | guard 1 | balanceIn 0 | `Reverted("XYCSwapRequiresBothBalancesNonZero")` |
 | D — recompute | exact-in recompute | amountOut 7 (pre-set) | `Reverted("XYCSwapRecomputeDetected")` |
+| E — amount-out-exceeds | exact-out guard 3 | out 150 > balanceOut 100 | `Reverted("XYCSwapAmountOutExceedsBalanceOut")` |
 
 Program: `b"\x50\x00"`. Scenario B deliberately picks a **non-dividing** input (3000/70 = 42 r.60)
 so the ceiling (43) is distinguished from the floor (42). Scenario A asserts the **exact** quote
@@ -108,15 +112,24 @@ this opcode from `ADMITTED` to `TESTED` in `axioms.md`.
 
 ## Known limitations (honest scope)
 
-- **Overflow / div-by-zero not modelled.** `amountIn * balanceOut` (exact-in) and
-  `amountOut * balanceIn` (exact-out) are Solidity 0.8 checked `uint256` multiplication
+- **Exact-out divisor — `amountOut >= balanceOut` reverts (modelled).** The exact-out
+  subtraction `balanceOut - amountOut` underflows (`Panic 0x11`) when `amountOut > balanceOut`
+  and `Math.ceilDiv(_, 0)` reverts (`Panic 0x12`) when equal. The model has a dedicated revert
+  arm (`XYCSwapAmountOutExceedsBalanceOut`) for `BOUT <=Int AOUT`, so both engines revert
+  here. The Solidity path is an arithmetic `Panic` with no contract selector, so the K reason
+  is a descriptive token (D5). (An earlier revision let the pricing rule fire unconditionally
+  and relied on `xycQuoteIn`'s defining rule being stuck to "fail safe" — that was wrong: a
+  claim on `<status>`/`<pc>`/a downstream register would close on a `Running` state the chain
+  never reaches. The revert arm fixes the soundness direction; see xycswap-concrete.k
+  scenario E.)
+- **Unbounded multiplication — not modelled (permissive).** `amountIn * balanceOut` (exact-in)
+  and `amountOut * balanceIn` (exact-out) are Solidity 0.8 checked `uint256` multiplication
   (`Panic(0x11)` on wraparound); the model uses unbounded `*Int`, so it computes where the EVM
   reverts. This is the SAME caveat T1 carries for LimitSwap (axioms.md): "K and the EVM differ
-  iff `amountIn * balanceOut >= 2^256`". The exact-out subtraction `balanceOut - amountOut`
-  underflows when `amountOut > balanceOut` (Panic 0x11) and `ceilDiv(_, 0)` reverts when equal
-  (Panic 0x12); `xycQuoteIn`'s defining rule requires `BOUT >Int AOUT`, so in that region the
-  symbol stays unreduced and the proof stalls — the safe failure direction. Neither region is
-  reachable for a well-formed partial fill (`amountOut < balanceOut` by construction).
+  iff `amountIn * balanceOut >= 2^256`". Worse here on the exact-out leg: the model can write a
+  value exceeding `2^256` into `<amountIn>` — not a representable uint256 at all. Read the
+  theorems as "given the products do not overflow". Distinguishing input (exact-in):
+  `balanceIn=1, balanceOut=2^200, amountIn=2^200` → chain `Panic(0x11)`, model computes.
 - **Symbolic universal claim not attempted.** Following the documented arm-selection limitation
   (opcodes/gte.md "Arm selection"), conformance is carried by CONCRETE claims. A symbolic claim
   would additionally need the `xycQuote*` symbols' inequality properties (e.g. the constant-

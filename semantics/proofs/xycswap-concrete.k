@@ -101,4 +101,24 @@ module XYCSWAP-CONCRETE
         <status> Running => Reverted("XYCSwapRecomputeDetected") </status>
         <trace> _ </trace>
 
+  // ---- Scenario E — AMOUNT-OUT-EXCEEDS-BALANCE REVERT (exact-out). amountOut 150 >
+  // balanceOut 100: on chain `balanceOut - amountOut` underflows (Panic 0x11). The model's
+  // guard-3 arm reverts "XYCSwapAmountOutExceedsBalanceOut" instead. Both revert; the K reason
+  // is a descriptive token for an arithmetic Panic that has no contract selector (D5). This
+  // guards the soundness direction the earlier revision got wrong — without this arm the
+  // pricing rule fired and left <status> Running on a state the chain never reaches.
+  claim <k> #run => .K </k>
+        <program> b"\x50\x00" </program>
+        <pc> 0 => 2 </pc>
+        <balanceIn> 100 </balanceIn> <balanceOut> 100 </balanceOut>
+        <amountIn> 0 </amountIn> <amountOut> 150 </amountOut>
+        <netPulled> _ </netPulled>
+        <isExactIn> false </isExactIn>
+        <tokenIn> _ </tokenIn> <tokenOut> _ </tokenOut>
+        <taker> _ </taker>
+        <balances> _ </balances>
+        <invalidators> _ </invalidators>
+        <status> Running => Reverted("XYCSwapAmountOutExceedsBalanceOut") </status>
+        <trace> _ </trace>
+
 endmodule

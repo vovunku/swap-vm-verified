@@ -358,43 +358,58 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap, Whit
         assertEq(o.pc, 5, "jumpIfDirection: branch NOT taken, pc = 2+3");
     }
 
-    /// @dev K claim c6: JumpIfTokenIn with arg token=1 == tokenIn=1 => pc 24 (jump past end).
-    ///      Program: 0x31 0x16 + bytes20(1) + bytes2(24) = 24 bytes. Note the token is exactly
+    /// @dev K claim c6: JumpIfTokenIn with arg token=1 == tokenIn=1 => jump to 30. Jump target
+    ///      30 != fall-through pc 24, so a mutant deleting the jump arm fails this test.
+    ///      Program: 0x31 0x16 + bytes20(1) + bytes2(30) = 24 bytes. Note the token is exactly
     ///      20 bytes (bytes20), NOT bytes32 -- argsLen declares 0x16=22 = 20 token + 2 pc, and a
     ///      wider literal would leave trailing bytes that decode as a second instruction.
     function test_conformance_jumpIfTokenIn_taken() public {
         bytes memory prog = bytes.concat(
             hex"3116",
             bytes20(uint160(1)),
-            bytes2(uint16(24))
+            bytes2(uint16(30))
         );
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, TAKER, address(uint160(1)), TOKEN_HI, 1e18, 0, true);
-        assertEq(o.pc, 24, "jumpIfTokenIn: token match, nextPC = 24");
+        assertEq(o.pc, 30, "jumpIfTokenIn: token match, nextPC = 30");
     }
 
-    /// @dev K claim c7: JumpIfTokenIn with arg token=5 != tokenIn=1 => pc 24 (fall through).
+    /// @dev K claim c7: JumpIfTokenIn with arg token=5 != tokenIn=1 => fall through, pc 24.
     function test_conformance_jumpIfTokenIn_fallThrough() public {
         bytes memory prog = bytes.concat(
             hex"3116",
             bytes20(uint160(5)),
-            bytes2(uint16(24))
+            bytes2(uint16(30))
         );
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, TAKER, address(uint160(1)), TOKEN_HI, 1e18, 0, true);
         assertEq(o.pc, 24, "jumpIfTokenIn: no match, pc = 2+22");
     }
 
-    /// @dev K claim c8: JumpIfTokenOut with arg token=7 == tokenOut=7 => pc 24.
+    /// @dev K claim c8: JumpIfTokenOut with arg token=7 == tokenOut=7 => jump to 30.
     function test_conformance_jumpIfTokenOut_taken() public {
         bytes memory prog = bytes.concat(
             hex"3216",
             bytes20(uint160(7)),
-            bytes2(uint16(24))
+            bytes2(uint16(30))
         );
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, TAKER, TOKEN_LO, address(uint160(7)), 1e18, 0, true);
-        assertEq(o.pc, 24, "jumpIfTokenOut: token match, nextPC = 24");
+        assertEq(o.pc, 30, "jumpIfTokenOut: token match, nextPC = 30");
+    }
+
+    /// @dev K claim: JumpIfTokenOut with arg token=9 != tokenOut=7 => fall through, pc 24.
+    ///      Paired with the taken case so BOTH arms are exercised (previously only taken
+    ///      existed). A mutant that always jumps fails this; one that never jumps fails taken.
+    function test_conformance_jumpIfTokenOut_fallThrough() public {
+        bytes memory prog = bytes.concat(
+            hex"3216",
+            bytes20(uint160(9)),
+            bytes2(uint16(30))
+        );
+        InstructionConformanceTest.Outcome memory o =
+            this.runProgram(prog, TAKER, TOKEN_LO, address(uint160(7)), 1e18, 0, true);
+        assertEq(o.pc, 24, "jumpIfTokenOut: no match, pc = 2+22");
     }
 
     /// @dev K claim c9: PrivateOrder, taker matches packed arg. taker=0x1234=4660; arg =
@@ -525,21 +540,22 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap, Whit
     }
 
     /// @dev K claim whitelistcoequal-concrete.k A: packed taker 4660 matches the single list
-    ///      entry => jump to 14. Program: 0x2c 0x0c + bytes2(14) + bytes10(uint80(4660)) = 14 bytes.
+    ///      entry => jump to 20. Program: 0x2c 0x0c + bytes2(20) + bytes10(uint80(4660)) = 14 bytes.
+    ///      Jump target 20 != fall-through pc 14, so a mutant deleting the jump arm fails this.
     ///      Solidity packs uint80(uint160(taker)); for taker 4660 (< 2^80) that equals 4660.
     function test_conformance_whitelistCoequal_match_jumps() public {
         bytes memory prog =
-            bytes.concat(hex"2c0c", bytes2(uint16(14)), bytes10(uint80(uint160(uint256(4660)))));
+            bytes.concat(hex"2c0c", bytes2(uint16(20)), bytes10(uint80(uint160(uint256(4660)))));
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, address(uint160(4660)), TOKEN_LO, TOKEN_HI, 1e18, 0, true);
-        assertEq(o.pc, 14, "whitelistCoequal: match, nextPC = 14");
+        assertEq(o.pc, 20, "whitelistCoequal: match, nextPC = 20");
     }
 
     /// @dev K claim whitelistcoequal-concrete.k B: packed entry 9999 != taker 4660 => fall
     ///      through, pc = 2+12 = 14.
     function test_conformance_whitelistCoequal_noMatch_fallsThrough() public {
         bytes memory prog =
-            bytes.concat(hex"2c0c", bytes2(uint16(14)), bytes10(uint80(uint160(uint256(9999)))));
+            bytes.concat(hex"2c0c", bytes2(uint16(20)), bytes10(uint80(uint160(uint256(9999)))));
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, address(uint160(4660)), TOKEN_LO, TOKEN_HI, 1e18, 0, true);
         assertEq(o.pc, 14, "whitelistCoequal: no match, pc = 2+12");
@@ -547,11 +563,12 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap, Whit
 
     /// @dev K claim whitelistsequential-concrete.k A: ts 10, start 0, duration 1000, addr 4660
     ///      matches taker => JUMP (address check fires before timeLeft<duration check).
-    ///      Program: 0x2d 0x13 + bytes2(21) + bytes5(0) + bytes2(1000) + bytes10(4660) = 21 bytes.
+    ///      Program: 0x2d 0x13 + bytes2(30) + bytes5(0) + bytes2(1000) + bytes10(4660) = 21 bytes.
+    ///      Jump target 30 != fall-through pc 21.
     function test_conformance_whitelistSequential_match_jumps() public {
         bytes memory prog = bytes.concat(
             hex"2d13",
-            bytes2(uint16(21)),
+            bytes2(uint16(30)),
             bytes5(uint40(0)),
             bytes2(uint16(1000)),
             bytes10(uint80(uint160(uint256(4660))))
@@ -559,7 +576,7 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap, Whit
         vm.warp(10);
         InstructionConformanceTest.Outcome memory o =
             this.runProgram(prog, address(uint160(4660)), TOKEN_LO, TOKEN_HI, 1e18, 0, true);
-        assertEq(o.pc, 21, "whitelistSequential: match in window, nextPC = 21");
+        assertEq(o.pc, 30, "whitelistSequential: match in window, nextPC = 30");
     }
 
     /// @dev K claim whitelistsequential-concrete.k B: ts 10, start 0, duration 1000, addr 9999
@@ -567,7 +584,7 @@ contract InstructionConformanceTest is Test, Controls, Balances, LimitSwap, Whit
     function test_conformance_whitelistSequential_noMatch_inWindow_reverts() public {
         bytes memory prog = bytes.concat(
             hex"2d13",
-            bytes2(uint16(21)),
+            bytes2(uint16(30)),
             bytes5(uint40(0)),
             bytes2(uint16(1000)),
             bytes10(uint80(uint160(uint256(9999))))

@@ -51,14 +51,20 @@ requires "../swapvm.md"
 // and `amountOut * balanceIn` (exact-out) are Solidity 0.8 checked `uint256` multiplication:
 // they revert `Panic(0x11)` on wraparound. The model uses unbounded `*Int` / `/Int`, so it
 // COMPUTES where the EVM reverts. This is the SAME caveat T1 carries for LimitSwap
-// (axioms.md): "K and the EVM differ iff amountIn * balanceOut >= 2^256". The exact-out
-// subtraction `balanceOut - amountOut` underflows in the EVM when `amountOut > balanceOut`
-// (Panic 0x11) and `Math.ceilDiv(_, 0)` reverts when `amountOut == balanceOut` (Panic 0x12).
-// The model's `xycQuoteIn` defining rule requires `BOUT >Int AOUT`, so in that region the
-// symbol stays unreduced (the proof stalls) — the SAFE failure direction (a claim on a
-// fictionsucceeds cannot close). Neither region is reachable for a well-formed partial fill,
-// where `amountOut < balanceOut` by construction. Read the theorems as "given the products do
-// not overflow and `amountOut < balanceOut`".
+// (axioms.md): "K and the EVM differ iff amountIn * balanceOut >= 2^256". Read the exact-in
+// theorems as "given the product does not overflow". DOCUMENTED, NOT MODELLED — see
+// "Known limitations" in xycswap.md.
+//
+// EXACT-OUT DIVISOR — `balanceOut - amountOut`. In the EVM this underflows (`Panic 0x11`)
+// when `amountOut > balanceOut` and `Math.ceilDiv(_, 0)` reverts (`Panic 0x12`) when equal.
+// The model REVERTS this case explicitly (the `BOUT <=Int AOUT` arm below) with a descriptive
+// reason, so the model and the chain BOTH revert here. (An earlier revision let the exact-out
+// pricing rule fire unconditionally and relied on `xycQuoteIn`'s defining rule being stuck to
+// "fail safe" — that was WRONG: a claim on `<status>`, `<pc>` or a downstream register closes
+// on a `Running` state the chain never reaches. The revert arm fixes the soundness
+// direction.) On the Solidity side this path is an arithmetic `Panic`, not a named XYCSwap
+// error, so the K reason `"XYCSwapAmountOutExceedsBalanceOut"` is a descriptive token (D5:
+// reasons are opaque) rather than a selector that exists in the contract.
 //
 // D-1 PRECEDENCE HAZARD (axioms.md "DEFECT D-1"). The rules below chain only `>Int` / `<=Int`
 // / `==Int` / `=/=Int` with `andBool` / `orBool` — NO `==Bool` / `=/=Bool`, which are the
@@ -138,16 +144,32 @@ module SWAPVM-XYCSWAP
        <status> Running </status>
     requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN =/=Int 0
 
+  // Guard 3 (exact-out): amountOut >= balanceOut. K twin of the EVM arithmetic failure on
+  //   ctx.swap.balanceOut - ctx.swap.amountOut    (underflow -> Panic 0x11 when AOUT > BOUT)
+  //   Math.ceilDiv(_, 0)                          (div-by-zero -> Panic 0x12 when AOUT == BOUT)
+  // The chain reverts here; without this arm the pricing rule below would fire and write an
+  // unreduced `xycQuoteIn` symbol, leaving `<status> Running` — a state the chain never
+  // reaches, on which a `<status>`/`<pc>`/downstream claim would (wrongly) close. The reason
+  // is a descriptive token: the Solidity path is an arithmetic `Panic`, not a named XYCSwap
+  // error, so there is no contract selector to mirror (D5: reasons are opaque). Disjoint from
+  // the pricing rule on `BOUT <=Int AOUT` vs `BOUT >Int AOUT`.
+  rule <k> #exec ( 80 , _ ) => #revert("XYCSwapAmountOutExceedsBalanceOut") ... </k>
+       <isExactIn> false </isExactIn>
+       <amountOut> AOUT </amountOut>
+       <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
+       <status> Running </status>
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool BOUT <=Int AOUT
+
   // Pricing (exact-out). Writes `<amountIn>` once with the ceiling constant-product quote.
   // Mirrors swapvm.md:283-290 (the LimitSwap exact-out pricing rule) with `xycQuoteIn` in
-  // place of `limitQuoteIn`. The divisor `balanceOut - amountOut` lives inside `xycQuoteIn`;
-  // when `BOUT <=Int AOUT` the defining rule does not fire and the symbol stays unreduced
-  // (see header "OVERFLOW / DIV-BY-ZERO") — the safe direction.
+  // place of `limitQuoteIn`. Guarded by `BOUT >Int AOUT` so the divisor `balanceOut -
+  // amountOut` is strictly positive and `xycQuoteIn` reduces; the `BOUT <=Int AOUT` revert
+  // arm above takes the other case. `AIN ==Int 0` is the single-assignment guard.
   rule <k> #exec ( 80 , _ ) => .K ... </k>
        <isExactIn> false </isExactIn>
        <amountIn> AIN => xycQuoteIn(AOUT, BIN, BOUT) </amountIn>
        <amountOut> AOUT </amountOut>
        <balanceIn> BIN </balanceIn> <balanceOut> BOUT </balanceOut>
        <status> Running </status>
-    requires BIN >Int 0 andBool BOUT >Int 0 andBool AIN ==Int 0
+    requires BIN >Int 0 andBool BOUT >Int 0 andBool BOUT >Int AOUT andBool AIN ==Int 0
 endmodule

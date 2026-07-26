@@ -55,12 +55,16 @@ module WHITELISTCOEQUAL-CONCRETE
   // low 80 bits (4660 mod 2^80 = 4660). The recursive `#coequalContains` reduces to `true`
   // after one unfold: Bytes2Int(Int2Bytes(10, 4660, BE), BE, Unsigned) ==Int 4660 → true.
   // The 0x2c JUMP arm fires, overwriting <pc> with Bytes2Int(substrBytes(ARGS, 0, 2), BE,
-  // Unsigned) = 14. The loop then tries to decode at pc=14, hits the loop-exit rule
-  // (swapvm.md:100-105) since 14 >= lengthBytes(PGM)=14, and halts with status Running.
-  // Mirror of jump-spec.k's "jump lands past end" shape and the 0x23 PASS composition shape.
+  // Unsigned) = 20. The loop then tries to decode at pc=20, hits the loop-exit rule
+  // (swapvm.md:100-105) since 20 >= lengthBytes(PGM)=14, and halts with status Running.
+  // DISCRIMINATION: jump target 20 != fall-through pc 14. Earlier the target was 14 ==
+  // fall-through, so both scenarios asserted the same pc and a mutant deleting the JUMP arm
+  // passed both — verified by deletion (whitelistcoequal-concrete still PROVED with both 0x2c
+  // rules removed). With the target at 20, deleting the JUMP arm makes this claim fail
+  // (fall-through lands at 14, not 20).
   claim <k> #run => .K </k>
-        <program> b"\x2c\x0c" +Bytes Int2Bytes(2, 14, BE) +Bytes Int2Bytes(10, 4660, BE) </program>
-        <pc> 0 => 14 </pc>
+        <program> b"\x2c\x0c" +Bytes Int2Bytes(2, 20, BE) +Bytes Int2Bytes(10, 4660, BE) </program>
+        <pc> 0 => 20 </pc>
         <balanceIn> _ </balanceIn> <balanceOut> _ </balanceOut>
         <amountIn> _ </amountIn> <amountOut> _ </amountOut>
         <netPulled> _ </netPulled>
@@ -78,10 +82,11 @@ module WHITELISTCOEQUAL-CONCRETE
   // the recursive call on the empty tail hits the base case → false; `false orBool false` →
   // false. The 0x2c FALL-THROUGH arm fires (no <pc> overwrite), the loop inherits the
   // decode-advanced pc = 2 + 12 = 14, hits the loop-exit rule, and halts with status Running.
-  // This is the boundary case (entry ≠ taker) which the JUMP arm must NOT take — covering it
-  // here guards against an arm-selection bug where both arms produce the same outcome.
+  // This is the boundary case (entry ≠ taker) which the JUMP arm must NOT take. Combined with
+  // scenario A (pc 20) it discriminates the two arms: a mutant that always jumps fails B
+  // (would give 20, not 14), a mutant that never jumps fails A (would give 14, not 20).
   claim <k> #run => .K </k>
-        <program> b"\x2c\x0c" +Bytes Int2Bytes(2, 14, BE) +Bytes Int2Bytes(10, 9999, BE) </program>
+        <program> b"\x2c\x0c" +Bytes Int2Bytes(2, 20, BE) +Bytes Int2Bytes(10, 9999, BE) </program>
         <pc> 0 => 14 </pc>
         <balanceIn> _ </balanceIn> <balanceOut> _ </balanceOut>
         <amountIn> _ </amountIn> <amountOut> _ </amountOut>

@@ -56,6 +56,8 @@ module CONFORMANCE-CONCRETE
 
   // ---- JumpIfDirection (0x30), branch TAKEN. args=0x01 (dir=true) + 0x0009 (pc=9).
   // tokenIn=1 < tokenOut=2 => swapDir=true; expectedDir==swapDir => jump to 9. Program 5 bytes.
+  // Jump target 9 != fall-through pc 5, so deleting the jump arm would make this claim fail
+  // (fall-through lands at 5, not 9) — the claim discriminates the arm.
   claim <k> #run => .K </k>
         <program> b"\x30\x03\x01\x00\x09" </program>
         <pc> 0 => 9 </pc>
@@ -70,24 +72,37 @@ module CONFORMANCE-CONCRETE
         <tokenIn> 2 </tokenIn> <tokenOut> 1 </tokenOut>
         <status> Running </status>
 
-  // ---- JumpIfTokenIn (0x31), branch TAKEN. args = 20-byte token (=1) + 2-byte pc (=24).
-  // Built via Int2Bytes so widths are exact. tokenIn=1 == arg => jump to 24. Program is 24 bytes.
+  // ---- JumpIfTokenIn (0x31), branch TAKEN. args = 20-byte token (=1) + 2-byte pc (=30).
+  // Built via Int2Bytes so widths are exact. tokenIn=1 == arg => jump to 30. Program is 24
+  // bytes; jump target 30 != fall-through pc 24 (and 30 >= 24 so the loop exits). Earlier the
+  // target was 24 == fall-through, so a mutant deleting the jump arm passed both claims.
   claim <k> #run => .K </k>
-        <program> b"\x31\x16" +Bytes Int2Bytes(20, 1, BE) +Bytes Int2Bytes(2, 24, BE) </program>
-        <pc> 0 => 24 </pc>
+        <program> b"\x31\x16" +Bytes Int2Bytes(20, 1, BE) +Bytes Int2Bytes(2, 30, BE) </program>
+        <pc> 0 => 30 </pc>
         <tokenIn> 1 </tokenIn>
         <status> Running </status>
 
   // ---- JumpIfTokenIn (0x31), branch NOT TAKEN. arg token=5 != tokenIn=1. Fall through, pc=24.
   claim <k> #run => .K </k>
-        <program> b"\x31\x16" +Bytes Int2Bytes(20, 5, BE) +Bytes Int2Bytes(2, 24, BE) </program>
+        <program> b"\x31\x16" +Bytes Int2Bytes(20, 5, BE) +Bytes Int2Bytes(2, 30, BE) </program>
         <pc> 0 => 24 </pc>
         <tokenIn> 1 </tokenIn>
         <status> Running </status>
 
-  // ---- JumpIfTokenOut (0x32), branch TAKEN. arg token=7 == tokenOut=7 => jump to 24.
+  // ---- JumpIfTokenOut (0x32), branch TAKEN. arg token=7 == tokenOut=7 => jump to 30.
+  // Jump target 30 != fall-through pc 24. (A not-taken case is added below so BOTH arms are
+  // exercised; previously only the taken case existed, so the fall-through arm had no coverage.)
   claim <k> #run => .K </k>
-        <program> b"\x32\x16" +Bytes Int2Bytes(20, 7, BE) +Bytes Int2Bytes(2, 24, BE) </program>
+        <program> b"\x32\x16" +Bytes Int2Bytes(20, 7, BE) +Bytes Int2Bytes(2, 30, BE) </program>
+        <pc> 0 => 30 </pc>
+        <tokenOut> 7 </tokenOut>
+        <status> Running </status>
+
+  // ---- JumpIfTokenOut (0x32), branch NOT TAKEN. arg token=9 != tokenOut=7 => fall through,
+  // pc = 2+22 = 24. Paired with the taken case above: a mutant that swaps or deletes either
+  // arm now fails exactly one of the two claims (taken wants pc 30, not-taken wants pc 24).
+  claim <k> #run => .K </k>
+        <program> b"\x32\x16" +Bytes Int2Bytes(20, 9, BE) +Bytes Int2Bytes(2, 30, BE) </program>
         <pc> 0 => 24 </pc>
         <tokenOut> 7 </tokenOut>
         <status> Running </status>
