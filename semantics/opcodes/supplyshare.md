@@ -13,7 +13,7 @@ function _onlyTakerTokenSupplyShareGte(Context memory ctx, bytes calldata args) 
     uint64 minShareE18 = uint64(bytes8(args.slice(20)));
     uint256 balance = IERC20(token).balanceOf(ctx.query.taker);
     uint256 totalSupply = IERC20(token).totalSupply();
-    // balance * 1e18 >= minShareE18 * totalSupply
+    // balance * 1e18 / totalSupply >= minShareE18
     require(totalSupply > 0 && balance * 1e18 >= minShareE18 * totalSupply,
             TakerTokenBalanceSupplyShareIsLessThanRequired(...));
 }
@@ -34,17 +34,18 @@ value and leaves it — the same posture as Revert, Salt, Deadline, and Gte.
 
 Three rules in `opcodes/supplyshare.k`:
 
-1. **REVERT arm** — canonical `lengthBytes(ARGS) ==Int 28`, premise
-   `notBool #supplyShareSufficient(BALANCE, TOTALSUPPLY, MIN)` (conceptually the failure of
-   the conjunction): reverts with `"TakerTokenBalanceSupplyShareIsLessThanRequired"`,
-   clears `<k>`, sets `<status>`.
-2. **PASS arm** — canonical length, premise
-   `#supplyShareSufficient(BALANCE, TOTALSUPPLY, MIN)`: no-op, leaves `#run` in `<k>`,
-   loop proceeds.
+1. **REVERT arm** — canonical `lengthBytes(ARGS) ==Int 28`, side condition
+   `notBool (totalSupply >Int 0 andBool balance *Int 1e18 >=Int minShare *Int totalSupply)`:
+   reverts with `"TakerTokenBalanceSupplyShareIsLessThanRequired"`, clears `<k>`, sets
+   `<status>`.
+2. **PASS arm** — canonical length, side condition
+   `totalSupply >Int 0 andBool balance *Int 1e18 >=Int minShare *Int totalSupply`: no-op,
+   leaves `#run` in `<k>`, loop proceeds.
 3. **UNMODELLED-ARGS-LENGTH arm** — `lengthBytes(ARGS) =/=Int 28`: reverts loudly with
    `"UNMODELLED-ARGS-LENGTH"` so a proof cannot silently succeed on a wrong length.
 
-The token and minShareE18 are read with
+The two canonical arms' side conditions are the LITERAL Solidity conjunction and its
+negation — no predicate abstraction. The token and minShareE18 are read with
 
 ```k
 Bytes2Int(substrBytes(ARGS,  0, 20), BE, Unsigned)   // token
@@ -55,20 +56,22 @@ Under `lengthBytes(ARGS) ==Int 28` these are the exact 20- and 8-byte big-endian
 Solidity does, and the round-trip lemma (`lemmas.k:64-67`) rewrites each
 `Bytes2Int(Int2Bytes(...))` back to the symbolic Int the spec supplies, under the standard
 width bounds (`0 <=Int TOK <Int 2^160` with N = 20; `0 <=Int MIN <Int 2^64` with N = 8).
+The literal `1e18` is written as its full integer expansion `1000000000000000000` in the
+K rule, matching Solidity exactly.
 
 ## The two external reads
 
 The Solidity consults the chain **twice**:
 
-1. **`IERC20(token).balanceOf(ctx.query.taker)`** (Controls.sol:171) — already modelled via
+1. **`IERC20(token).balanceOf(ctx.query.taker)`** (Controls.sol:174) — already modelled via
    `#balanceOf(B, TOKEN, HOLDER)` (swapvm.md:171-174), the existing D4 abstraction boundary
    for ERC-20 state (`PLAN.md` D4). SupplyShare reuses it unchanged.
-2. **`IERC20(token).totalSupply()`** (Controls.sol:172) — NOT modelled anywhere in
+2. **`IERC20(token).totalSupply()`** (Controls.sol:175) — NOT modelled anywhere in
    swapvm.md. Per `PLAN.md` D4 this is an external ERC-20 read at the abstraction boundary,
    modelled here as a local uninterpreted function
    `syntax Int ::= #totalSupply ( Int ) [function, no-evaluators]`
    (see `opcodes/supplyshare.k`). No defining rule: its value is fixed-but-unknown,
-   constrained only by spec premises. The brief forbids editing swapvm.md — five sibling
+   constrained only by spec premises. The brief forbids editing swapvm.md — six sibling
    subagents depend on it being untouched — so the symbol is declared locally in
    `SWAPVM-SUPPLYSHARE` rather than added to the `<balances>` cell or a new `<totalSupplies>`
    cell. This matches how Deadline models `block.timestamp` as `#blockTimestamp()` and how
@@ -82,72 +85,102 @@ The Solidity consults the chain **twice**:
 - **`no-evaluators`** — the simplifier may not invent a reduction; it stays opaque.
 - **Not a cell.** Adding a `<totalSupplies>` cell to swapvm.md was explicitly out of scope
   (swapvm.md must remain untouched); the local declaration achieves the same abstraction.
-- **Quantification lives in the spec.** A spec reasons about supply either through the
-  `#supplyShareSufficient` predicate (the recommended path) or directly, e.g.
-  `requires #totalSupply(TOK) >Int 0`.
+- **Quantification lives in the spec.** A concrete spec pins the supply via a premise
+  (e.g. `requires #totalSupply(1) ==Int 1000`); a future symbolic spec, should the backend
+  grow the missing SMT propagation, would quantify over it as a free variable.
 
-## The share arithmetic the predicate encapsulates
+## Direct form, concrete conformance — why not the predicate form
 
-`#supplyShareSufficient(BALANCE, TOTALSUPPLY, MINSHAREE18)` abstracts the full Solidity
-require conjunction (Controls.sol:175):
+The rule branches on the DIRECT arithmetic
 
-```
-   TOTALSUPPLY >Int 0
+```k
+totalSupply >Int 0
  andBool
-   BALANCE *Int 1000000000000000000  >=Int  MINSHAREE18 *Int TOTALSUPPLY
+balance *Int 1000000000000000000  >=Int  minShare *Int totalSupply        (PASS)
+notBool ( ... )                                                        (REVERT)
 ```
 
-i.e. `totalSupply > 0` AND `balance * 1e18 >= minShareE18 * totalSupply`. The opcode reverts
-iff this conjunction FAILS — that is, iff `totalSupply == 0` OR
-`balance * 1e18 < minShareE18 * totalSupply`.
+rather than on an abstracted Bool predicate. An earlier revision of this opcode used a
+predicate `#supplyShareSufficient(BAL, TS, MIN)` (conceptually the conjunction above) and
+a symbolic universal claim `proofs/supplyshare-spec.k` branched on it. That revision was
+WRONG and has been reverted. Two independent problems, identical to the Gte subagent's
+diagnosis (`opcodes/gte.md` "Direct form, concrete conformance"):
 
-The factor `1e18` matches Solidity's `1e18` literal exactly: shares are expressed in
-parts-per-1e18 (a minShareE18 of `1e18` means "100% of supply", `5e17` means "50%", etc.).
-The product `MINSHAREE18 *Int TOTALSUPPLY` is the symbolic threshold the balance scaled by
-`1e18` must reach.
+1. **The symbolic claim was TAUTOLOGICAL.** `supplyshare-spec.k` assumed
+   `notBool #supplyShareSufficient(...)` as a premise, and the rule's REVERT arm fired on
+   the same `#supplyShareSufficient(...)` — so the "proof" assumed the predicate and then
+   concluded under the predicate, establishing NOTHING about whether the underlying
+   conjunction matched Solidity. A wrong definition (e.g. `<=Int` vs `<Int`, comparing the
+   wrong token, or omitting the `totalSupply > 0` conjunct) would have passed identically.
+   This is the worst kind of false confidence: green CI, no content.
+2. **`krun` could not reduce the predicate either.** With `[function, no-evaluators]` and
+   no simplification rule equating the predicate to its underlying conjunction (the
+   simplification rule was deliberately omitted because it would re-introduce the
+   arm-selection issue — see below), a concrete `krun` on a SupplyShare program would leave
+   `#supplyShareSufficient(BAL, TS, MIN)` as a residual symbol. So the predicate form had
+   NO conformance evidence of any kind: not from kprove (the proof was tautological) and
+   not from krun (the predicate does not reduce).
 
-## Arm selection — why the Bool predicate, not the direct arithmetic
+The direct form restores MEANING to the comparison: the rule now says what the Solidity
+says, and a wrong definition would be caught by any claim that exercises it.
 
-The Solidity-faithful condition is the conjunction above. The natural two-arm rule form
-would split on the conjunction vs its negation:
+### Why the symbolic universal claim no longer proves
 
-```
-   requires ... >=Int MIN *Int #totalSupply(...) andBool #totalSupply(...) >Int 0    // PASS
-   requires notBool (...)                                                          // REVERT
-```
-
-**This does not prove in the K Haskell backend.** The diagnostic was established by the
-Deadline subagent (`opcodes/deadline.md:125-156`) and re-confirmed by the Gte subagent
-(`opcodes/gte.md` "Arm selection"): the backend does NOT propagate an inequality premise on
-an uninterpreted-vs-SYMBOLIC comparison into a refutation of the opposite arm of a two-arm
-rule. Here BOTH conjuncts involve uninterpreted functions compared to (or multiplied by)
-symbolic values:
+The direct form has a known limitation: a SYMBOLIC universal claim over arbitrary `TOK`,
+`MIN`, and `TAKER` does NOT prove. The K Haskell backend (v7.1.337, the toolchain in this
+repo) does not propagate an inequality premise on an uninterpreted-vs-symbolic comparison
+into a refutation of the opposite arm of a two-arm rule (diagnostic in
+`opcodes/deadline.md:125-156`; re-confirmed for the Gte opcode — `opcodes/gte.md` "Arm
+selection"). Here BOTH conjuncts involve uninterpreted functions compared to (or
+multiplied by) symbolic values:
 
 - `#totalSupply(...) >Int 0` — uninterpreted-vs-constant, which the gate (`0x23`) shows DOES
   propagate;
 - `#balanceOf(...) *Int 1e18 >=Int MIN *Int #totalSupply(...)` — uninterpreted-vs-symbolic
   on BOTH sides, which does NOT propagate.
 
-A spec premise `notBool (#balanceOf(...) *Int 1e18 >=Int MIN *Int #totalSupply(...))` would
-not refute the PASS arm, the PASS arm would not halt, the loop would run into the symbolic
-TAIL, and the all-path claim would stall — exactly the failure mode the diagnostic
-isolates, now confirmed by **two sibling subagents this round** (Deadline, Gte). The brief's
-"CRITICAL lesson" directs going straight to the predicate form rather than attempting the
-direct two-arm arithmetic form first; this file honours that.
+With arms the conjunction vs its negation and a premise asserting the negation, the PASS
+arm is still explored, the PASS arm does not halt (it leaves `#run` in `<k>`), the loop
+runs into the symbolic `TAIL`, and the all-path claim stalls — exactly the failure mode
+the diagnostic isolates, now confirmed by **three sibling subagents** (Deadline, Gte,
+SupplyShare).
 
-The fix is the same shape Deadline and Gte adopted: abstract the entire conjunction into a
-single Bool predicate `#supplyShareSufficient(BAL, TS, MIN)` and branch on THAT. A premise
-`notBool #supplyShareSufficient(BAL, TS, MIN)` (implicitly `==Bool true`) then selects the
-REVERT arm exactly as:
+The gate rule (`swapvm.md:182-193`) avoids this only because its arms compare
+`#balanceOf(...)` to a CONSTANT (`0`), not a symbolic value, and constant reasoning IS
+propagated.
 
-- `#balanceOf(...) ==Int 0` selects the gate's (`0x23`) REVERT arm,
-- `#deadlineExceeded(DL)` selects Deadline's (`0x20`) REVERT arm,
-- `#balanceLtMin(TOK, MIN)` selects Gte's (`0x24`) REVERT arm.
+### The right trade: concrete claims
 
-The three symbols (`#balanceOf`, `#totalSupply`, `#supplyShareSufficient`) are kept as
-independent uninterpreted terms — no simplification rule equates the predicate with its
-arithmetic expansion — so the arm-selection condition stays a single atomic Bool the SMT
-solver can decide on.
+The arm-selection limitation does NOT affect CONCRETE claims. With both `#balanceOf(B,
+TOK, TAKER)` and `MIN` reduced to concrete Ints — the former by `#balanceOf`'s defining
+rule on a concrete `<balances>` cell, the latter by a concrete `Int2Bytes(8, MIN, BE)`
+payload — and `#totalSupply(TOK)` pinned by a spec premise (e.g.
+`requires #totalSupply(1) ==Int 1000`), the entire conjunction becomes a concrete
+arithmetic fact the SMT solver decides immediately. The 1e18 multiplications are concrete;
+SMT handles them directly.
+
+The two concrete claims in `proofs/supplyshare-concrete.k` therefore ARE the conformance
+evidence: each runs a fully-concrete 30-byte program through `#run` and asserts the exact
+final `<pc>` and `<status>`. A concrete claim that proves under kprove is the operational
+equivalent of having `krun` the program — and unlike the predicate form, krun CAN reduce
+the direct conjunction on a concrete `<balances>` cell.
+
+The trade is asymmetric and correct: concrete conformance is REAL verification, the
+tautological symbolic claim was not. The symbolic universal claim is sacrificed; the
+concrete claims are added. Should the K backend grow the missing SMT propagation, the
+symbolic universal claim can be reinstated on top of the direct form (the prior
+`supplyshare-spec.k` shape, minus the predicate).
+
+### Diagnostic cross-reference
+
+The arm-selection limitation was isolated with the same minimal reproducer recorded in
+`opcodes/deadline.md:125-156`: a fake opcode `200` with three shapes — comparison to a
+constant (proves), comparison to a symbolic value via inequality premise (fails), Bool
+predicate (proves). The reproducer was run in-tree against the same kompiled definition
+shape the real proof uses, so the result is on the same backend, not a toy. The SupplyShare
+change here adopts the "comparison to a symbolic value" shape directly and accepts its
+consequence, matching the choice the Gte subagent made (`opcodes/gte.md` "Direct form,
+concrete conformance").
 
 ## Pad-and-truncate hazard
 
@@ -167,19 +200,44 @@ swapvm.md:319-324 and the twins in jump.k, deadline.k, and gte.k.
    chain, the sum of all holders' balances equals the total supply; the model does NOT
    enforce this invariant. A spec that needs it must add the premise by hand
    (e.g. `requires #totalSupply(TOK) >=Int #balanceOf(BALS, TOK, TAKER)`).
-2. **The `1e18` arithmetic is encapsulated, not symbolically verified.** The predicate
-   abstracts the conjunction `totalSupply > 0 && balance * 1e18 >= minShareE18 * totalSupply`
-   but the K rule does not evaluate it. A spec premise
-   `notBool #supplyShareSufficient(BAL, TS, MIN)` asserts the predicate's truth value
-   directly; the spec does not derive it from concrete `BAL`, `TS`, `MIN` values via the
-   arithmetic. This is the price of the predicate-form arm selection the K Haskell backend
-   forces. A spec that wanted to verify the arithmetic for a concrete instance would have
-   to assume the predicate-to-arithmetic equation as a lemma, which is itself unverified.
+2. **No symbolic universal claim.** The direct two-arm form does not support a symbolic
+   universal claim over arbitrary `TOK` / `MIN` / `TAKER` because the K Haskell backend
+   does not propagate an inequality premise on an uninterpreted-vs-symbolic comparison
+   into a refutation of the opposite arm (see "Direct form, concrete conformance"). The
+   conformance burden is carried instead by the two CONCRETE claims in
+   `proofs/supplyshare-concrete.k`, which prove and exercise the real conjunction on fixed
+   inputs. This is more evidence than the prior predicate form provided (its symbolic claim
+   was tautological; see above). The trade is asymmetric and correct.
 3. **The REVERT arm lumps two failure modes.** The Solidity reverts on EITHER
    `totalSupply == 0` OR `balance * 1e18 < minShareE18 * totalSupply`, with the same error
-   selector. The model mirrors this — one predicate, one revert — and cannot distinguish
-   the two failure modes in a trace. This matches on-chain behaviour (same selector) but
-   loses information a debugger might want.
+   selector. The model mirrors this — one negated conjunction, one revert — and cannot
+   distinguish the two failure modes in a trace. This matches on-chain behaviour (same
+   selector) but loses information a debugger might want. Scenario A of the concrete
+   claims exercises the `totalSupply == 0` path; a future additional concrete claim could
+   pin the `balance * 1e18 < minShare * totalSupply` path on a non-zero totalSupply.
+
+## Solidity mock gap (flagged for integrator, NOT this subagent's scope)
+
+`Controls.sol:174-175` consults BOTH `IERC20(token).balanceOf(taker)` AND
+`IERC20(token).totalSupply()`. The current Solidity conformance fixture `GateTokenMock`
+(`test/conformance/InstructionConformance.t.sol:16-22`) exposes ONLY `balanceOf`:
+
+```solidity
+contract GateTokenMock {
+    mapping(address => uint256) public balanceOf;
+    function setBalance(address holder, uint256 amount) external {
+        balanceOf[holder] = amount;
+    }
+}
+```
+
+To run the Solidity mirror of the two K claims in `proofs/supplyshare-concrete.k`, the
+integrator must extend `GateTokenMock` (or replace it with a minimal ERC-20) to expose
+`totalSupply` — e.g. add a `uint256 public totalSupply;` field with a `setTotalSupply`
+setter, or rename the mock and inherit OpenZeppelin's `ERC20`. Until that is done, the
+Solidity-side conformance mirror of these two K claims cannot be wired into
+`InstructionConformance.t.sol`. The K side (this file, `opcodes/supplyshare.k`, and
+`proofs/supplyshare-concrete.k`) is complete and self-contained and proves without it.
 
 ## Integration
 
@@ -198,14 +256,13 @@ module SWAPVM-BYTES-LEMMAS
 endmodule
 ```
 
-The SPECS list gains the two new files alongside the existing twins:
+The SPECS list gains the new file replacing the deleted twins:
 
 ```
-proofs/supplyshare-spec.k
-proofs/supplyshare-control.k
+proofs/supplyshare-concrete.k        // (was: supplyshare-spec.k + supplyshare-control.k)
 ```
 
-Sensitivity twin of `supplyshare-spec.k` is `supplyshare-control.k` — same premises,
-conclusion `Running` instead of `Reverted("TakerTokenBalanceSupplyShareIsLessThanRequired")`
-— must FAIL. Together they show kprove is discriminating on the conclusion rather than
-choking on the setup. Same shape as gte-spec.k / gte-control.k.
+The two prior entries (`supplyshare-spec|prove`, `supplyshare-control|fail`) are GONE —
+both were tautological / sensitivity-twin-of-tautological under the predicate form. A
+harness entry per concrete claim would look like `supplyshare-concrete|prove` (kprove
+proves BOTH claims in the module on a single invocation).

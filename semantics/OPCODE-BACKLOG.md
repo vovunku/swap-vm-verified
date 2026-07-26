@@ -12,8 +12,9 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 
 ## Status legend
 
-- **modelled** — has K rules (in `swapvm.md` for the original 3; in `semantics/opcodes/<name>.k` as a sibling module for the core control flow family, integrated via `requires`/`imports` in `lemmas.k`)
-- **in-progress** — a subagent owns it (see `semantics/opcodes/<name>.k`)
+- **modelled** — has K rules (in `swapvm.md` for the original 3; in `semantics/opcodes/<name>.k` as a sibling module for the rest)
+- **conformance-verified** — modelled AND has concrete K claims + Solidity tests showing K↔production agreement (the real verification; see `test/conformance/InstructionConformance.t.sol` and `semantics/proofs/*-concrete.k`)
+- **in-progress** — a subagent owns it
 - **unmodelled** — not started
 
 ## 0x00–0x0f · Core control flow
@@ -21,26 +22,26 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 | Hex | Opcode | Handler | Source | Status |
 |-----|--------|---------|--------|--------|
 | `0x00` | Stop | `Controls._stop` | `Controls.sol:90-93` | modelled |
-| `0x01` | Revert | `Controls._revert` | `Controls.sol:85-87` | modelled |
-| `0x02` | Salt | `Controls._salt` | `Controls.sol:73` | modelled |
-| `0x03` | Jump | `Controls._jump` | `Controls.sol:79-82` | modelled |
+| `0x01` | Revert | `Controls._revert` | `Controls.sol:85-87` | conformance-verified |
+| `0x02` | Salt | `Controls._salt` | `Controls.sol:73` | conformance-verified |
+| `0x03` | Jump | `Controls._jump` | `Controls.sol:79-82` | conformance-verified |
 | `0x04` | Extruction | `Extruction._extruction` | `Extruction.sol:90-115` | modelled |
 
 ## 0x20–0x3f · Conditions & access guards
 
 | Hex | Opcode | Handler | Source | Status |
 |-----|--------|---------|--------|--------|
-| `0x20` | Deadline | `Controls._deadline` | `Controls.sol:131-134` | modelled |
+| `0x20` | Deadline | `Controls._deadline` | `Controls.sol:131-134` | conformance-verified |
 | `0x23` | OnlyTakerTokenBalanceNonZero | `Controls._onlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | **modelled** |
-| `0x24` | OnlyTakerTokenBalanceGte | `Controls._onlyTakerTokenBalanceGte` | `Controls.sol:161-166` | modelled |
-| `0x25` | OnlyTakerTokenSupplyShareGte | `Controls._onlyTakerTokenSupplyShareGte` | `Controls.sol:171-178` | modelled |
-| `0x26` | OnlyTxOriginTokenBalanceNonZero | `Controls._onlyTxOriginTokenBalanceNonZero` | `Controls.sol:152-156` | modelled |
-| `0x2b` | PrivateOrder | `Whitelist._privateOrder` | `instructions/Whitelist.sol` | modelled |
-| `0x2c` | WhitelistCoequal | `Whitelist._whitelistCoequal` | `instructions/Whitelist.sol` | modelled |
-| `0x2d` | WhitelistSequential | `Whitelist._whitelistSequential` | `instructions/Whitelist.sol` | modelled |
-| `0x30` | JumpIfDirection | `Controls._jumpIfDirection` | `Controls.sol:96-103` | modelled |
-| `0x31` | JumpIfTokenIn | `Controls._jumpIfTokenIn` | `Controls.sol:109-115` | modelled |
-| `0x32` | JumpIfTokenOut | `Controls._jumpIfTokenOut` | `Controls.sol:121-127` | modelled |
+| `0x24` | OnlyTakerTokenBalanceGte | `Controls._onlyTakerTokenBalanceGte` | `Controls.sol:161-166` | conformance-verified |
+| `0x25` | OnlyTakerTokenSupplyShareGte | `Controls._onlyTakerTokenSupplyShareGte` | `Controls.sol:171-178` | conformance-verified |
+| `0x26` | OnlyTxOriginTokenBalanceNonZero | `Controls._onlyTxOriginTokenBalanceNonZero` | `Controls.sol:152-156` | conformance-verified |
+| `0x2b` | PrivateOrder | `Whitelist._privateOrder` | `instructions/Whitelist.sol` | conformance-verified |
+| `0x2c` | WhitelistCoequal | `Whitelist._whitelistCoequal` | `instructions/Whitelist.sol` | conformance-verified |
+| `0x2d` | WhitelistSequential | `Whitelist._whitelistSequential` | `instructions/Whitelist.sol` | conformance-verified |
+| `0x30` | JumpIfDirection | `Controls._jumpIfDirection` | `Controls.sol:96-103` | conformance-verified |
+| `0x31` | JumpIfTokenIn | `Controls._jumpIfTokenIn` | `Controls.sol:109-115` | conformance-verified |
+| `0x32` | JumpIfTokenOut | `Controls._jumpIfTokenOut` | `Controls.sol:121-127` | conformance-verified |
 
 ## 0x40–0x4f · Invalidators & epochs
 

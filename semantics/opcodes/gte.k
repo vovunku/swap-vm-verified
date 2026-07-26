@@ -3,8 +3,8 @@ requires "../swapvm.md"
 // 0x24 OnlyTakerTokenBalanceGte — Controls.sol:158-166.
 //
 // Adds the Gte rule to the SWAPVM semantics. K v7 does not allow reopening `module SWAPVM`
-// across files (it reports "Module SWAPVM differs from previous declaration"), so this file
-// defines a sibling module SWAPVM-GTE that imports SWAPVM and adds the rules. Integration is
+// across files (it reports "Module SWAPVM differs from previous previous declaration"), so this
+// file defines a sibling module SWAPVM-GTE that imports SWAPVM and adds the rules. Integration is
 // via `requires "opcodes/gte.k"` plus `imports SWAPVM-GTE` from the main module
 // (semantics/lemmas.k) — see gte.md "Integration".
 //
@@ -25,6 +25,24 @@ requires "../swapvm.md"
 // revert or pass through — except that Gte reads an additional 32-byte `minAmount` after the
 // 20-byte token. Args layout is `[token:20][minAmount:32]`, total 52 bytes.
 //
+// DIRECT TWO-ARM FORM. The arms branch on the direct comparison
+//   #balanceOf(B, TOK, TAKER) <Int MIN     (REVERT)
+//   #balanceOf(B, TOK, TAKER) >=Int MIN    (PASS)
+// mirroring the gate's `>Int 0` / `<=Int 0` shape but compared to MIN rather than the constant
+// 0. An earlier revision of this file abstracted the comparison into a Bool predicate
+// `#balanceLtMin(TOK, MIN)` in order to make a SYMBOLIC universal claim (gte-spec.k) prove: the
+// K Haskell backend does not propagate an inequality premise on an uninterpreted-vs-symbolic
+// comparison into a refutation of the opposite arm (opcodes/deadline.md:125-156), so the direct
+// form stalled the all-path symbolic claim. That trade is now judged WRONG: the predicate made
+// the symbolic claim TAUTOLOGICAL (it assumed `#balanceLtMin(TOK, MIN)` as a premise, then the
+// rule with the same predicate fired), so the proof established nothing about the actual
+// `<` / `>=` definition, and krun could not reduce the predicate either — i.e. NO conformance
+// evidence at all. The direct form restores real meaning to the comparison; CONCRETE claims
+// (proofs/gte-concrete.k) verify it for fixed inputs, where both sides of the inequality are
+// concrete Ints and the SMT solver decides `<Int` / `>=Int` directly — no arm-selection issue.
+// The symbolic universal claim no longer proves; that is accepted. See gte.md "Direct form,
+// concrete conformance" for the full rationale.
+//
 // ARG DECODING. The Solidity source reads:
 //     address token    = address(bytes20(args));
 //     uint256 minAmount = uint256(bytes32(args.slice(20)));
@@ -35,8 +53,9 @@ requires "../swapvm.md"
 //     big-endian read;
 //   - `Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)` for minAmount, exactly the 32-byte
 //     big-endian read at offset 20.
-// The round-trip lemma in lemmas.k:64-67 rewrites each to the symbolic Int the spec supplies,
-// under the standard width bounds (`0 <=Int TOK <Int 2^160`, `0 <=Int MIN`).
+// The round-trip lemma in lemmas.k:64-67 rewrites each `Bytes2Int(Int2Bytes(...))` to the
+// symbolic Int a spec supplies, under the standard width bounds (`0 <=Int TOK <Int 2^160`,
+// `0 <=Int MIN <Int 2^256`).
 //
 // PAD-AND-TRUNCATE SOUNDNESS HAZARD (swapvm.md:301-324). The Solidity constrains nothing about
 // `args.length`. A short `args` is right-zero-padded at BOTH read sites (so e.g. an argsLen of
@@ -50,57 +69,9 @@ requires "../swapvm.md"
 // opcodes/jump.k:50-54 and opcodes/deadline.k:121-126: non-canonical lengths revert loudly
 // with `"UNMODELLED-ARGS-LENGTH"`, so a proof touching such a Gte fails rather than succeeds
 // on a fiction.
-//
-// ARM SELECTION — why `#balanceLtMin(TOKEN, MIN)` and not `#balanceOf(...) <Int MIN`. The gate
-// rule (swapvm.md:182-193) splits on `#balanceOf(...) >Int 0` vs `<=Int 0` and a spec premise
-// `#balanceOf(...) ==Int 0` selects the REVERT arm — but this works ONLY because the comparison
-// is to a CONSTANT (0). The Deadline subagent's diagnostic (opcodes/deadline.md:125-156)
-// established that the K Haskell backend does NOT propagate an inequality premise on an
-// uninterpreted-vs-SYMBOLIC comparison into a refutation of the opposite arm of a two-arm
-// rule: with arms `#testVal(0) >Int X` vs `<=Int X` and premise `#testVal(0) >Int X`, the
-// PASS arm is still explored and the all-path proof stalls. Gte compares `#balanceOf(...)` to
-// a SYMBOLIC `MIN` (read from args), so the direct two-arm form `requires ... <Int MIN` vs
-// `requires ... >=Int MIN` has EXACTLY the failure mode the diagnostic isolates: a spec premise
-// `#balanceOf(...) <Int MIN` would not refute the `>=Int MIN` PASS arm, the PASS arm would not
-// halt, the loop would run into the symbolic TAIL, and the all-path claim would stall.
-//
-// The fix is the same shape Deadline adopted (opcodes/deadline.k:84-119): abstract the
-// comparison itself into a Bool predicate
-//
-//     syntax Bool ::= #balanceLtMin ( Int , Int , Int ) [function, no-evaluators]
-//
-// conceptually `#balanceLtMin(BALS, TOKEN, TAKER, MIN) == (#balanceOf(BALS, TOKEN, TAKER) <Int MIN)`
-// — wait, see note below; the predicate takes (TOKEN, MIN) only.
-//
-// `#balanceLtMin(TOKEN, MIN)` — a unary-pair Bool predicate that the RULE branches on, taking
-// only the (TOKEN, MIN) pair derived from the rule's two substrBytes reads. (BALS and TAKER
-// are cells; TOKEN and MIN are local to the opcode.) Conceptually it is
-// `#balanceOf(BALS, TOKEN, TAKER) <Int MIN`; the two are kept as independent uninterpreted
-// symbols (no simplification rule equating them) so the arm-selection condition stays a single
-// atomic Bool the SMT solver can decide on, rather than a comparison between an uninterpreted
-// function and a symbolic value. The REVERT arm requires `#balanceLtMin(TOK, MIN)` and the
-// PASS arm requires `notBool #balanceLtMin(TOK, MIN)`; a spec premise
-// `#balanceLtMin(TOK, MIN)` (implicitly `==Bool true`) selects the REVERT arm exactly as
-// `#balanceOf(...) ==Int 0` selects the gate's REVERT arm and `#deadlineExceeded(DL)` selects
-// Deadline's REVERT arm.
-//
-// The direct two-arm form was tried first per the task brief; the predicate form is the
-// settlement. See gte.md "Arm selection" for the diagnostic cross-reference.
 
 module SWAPVM-GTE
   imports SWAPVM
-
-  // A Bool predicate abstracting `#balanceOf(BALS, TOKEN, TAKER) <Int MIN`. The RULE branches on
-  // this rather than on `#balanceOf(...) <Int MIN` directly, because the K Haskell backend
-  // cannot exclude an arm of a two-arm rule whose side condition compares an uninterpreted
-  // function (`#balanceOf`) to a SYMBOLIC value (`MIN`) — see file header and gte.md "Arm
-  // selection", cross-referencing opcodes/deadline.md:125-156. A spec premise
-  // `#balanceLtMin(TOK, MIN)` (implicitly `==Bool true`) selects the REVERT arm;
-  // `notBool #balanceLtMin(TOK, MIN)` would select the PASS arm. Conceptually
-  // `#balanceLtMin(TOK, MIN) == (#balanceOf(BALS, TOK, TAKER) <Int MIN)`; the two are kept as
-  // independent uninterpreted symbols (no simplification rule equating them) so the
-  // arm-selection condition stays decidable for the SMT solver.
-  syntax Bool ::= #balanceLtMin ( Int , Int ) [function, no-evaluators]
 
   // Canonical 52-byte Gte, REVERT arm. Solidity:
   //   require(balance >= minAmount, TakerTokenBalanceIsLessThanRequired(...));
@@ -117,9 +88,8 @@ module SWAPVM-GTE
        <balances> B </balances>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 52
-     andBool #balanceLtMin( Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
-                          , Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
-                          )
+     andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER)
+             <Int Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
 
   // Canonical 52-byte Gte, PASS arm. `balance >= minAmount`: the require holds, and
   // `_onlyTakerTokenBalanceGte` returns normally. The opcode is a no-op at the register level
@@ -129,15 +99,14 @@ module SWAPVM-GTE
   // the program WILL be decoded after Gte passes. The composition shape for positive claims
   // therefore mirrors gate-spec.k / deadline-spec.k on the REVERT arm (HALT, tail unconsumed)
   // and would mirror salt-spec.k / jump-spec.k on the PASS arm (no halt, must terminate
-  // concretely); the minimum positive claim here covers the REVERT arm only.
+  // concretely); concrete claims for both arms live in proofs/gte-concrete.k.
   rule <k> #exec ( 36 , ARGS ) => .K ... </k>
        <query> ... <taker> TAKER </taker> ... </query>
        <balances> B </balances>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 52
-     andBool notBool #balanceLtMin( Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
-                                  , Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
-                                  )
+     andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER)
+             >=Int Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
 
   // Non-canonical args: Solidity right-pads short and truncates long without reverting, which is
   // a soundness hazard (swapvm.md:301-324). Revert loudly here so a proof cannot silently

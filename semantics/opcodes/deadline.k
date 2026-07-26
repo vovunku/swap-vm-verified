@@ -17,10 +17,10 @@ requires "../swapvm.md"
 // in <k>).
 //
 // The Solidity reads `uint40(bytes5(args))`, i.e. the first 5 bytes of `args` as a big-endian
-// uint40. The model reads `Bytes2Int(ARGS, BE, Unsigned)` — the WHOLE ARGS, not a substr. Under
-// the rule's `lengthBytes(ARGS) ==Int 5` side condition the two are equivalent (ARGS is exactly 5
-// bytes, so reading all of it equals reading its first 5 bytes), and the no-substr form matches
-// the gate rule's pattern at swapvm.md:187. See deadline.md "Why the rule reads the whole ARGS".
+// uint40. The model reads `Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)` — the explicit substr
+// mirrors Solidity's 5-byte read and is the form used in the rule below. (Under the rule's
+// `lengthBytes(ARGS) ==Int 5` side condition this is equivalent to reading the whole ARGS; the
+// substr form is preferred here so the rule text matches the Solidity `bytes5(args)` read exactly.)
 //
 // PAD-AND-TRUNCATE SOUNDNESS HAZARD (swapvm.md:301-324). The Solidity constrains nothing: a
 // short `args` is right-zero-padded, and a long `args` is silently truncated to the first 5 bytes.
@@ -32,39 +32,40 @@ requires "../swapvm.md"
 // a proof touching such a Deadline fails rather than succeeds on a fiction.
 //
 // block.timestamp is an EXTERNAL ENVIRONMENT input — no on-chain state for the VM to consult.
-// Per PLAN.md D4 it is abstracted out of the K configuration. Two uninterpreted symbols are
+// Per PLAN.md D4 it is abstracted out of the K configuration. ONE uninterpreted symbol is
 // declared below:
 //
 //   - `#blockTimestamp()` — the D4 abstraction of the chain's `block.timestamp`, per the task
 //     brief. A nullary total function `[function, no-evaluators]`; its value is fixed-but-
 //     unknown, constrained only by spec premises. This is the symbol a spec uses to reason about
-//     the timestamp directly (e.g. `requires #blockTimestamp() >Int 0`).
+//     the timestamp directly (e.g. `requires #blockTimestamp() ==Int 100`).
 //
-//   - `#deadlineExceeded(DEADLINE)` — a Bool predicate that the RULE uses for arm selection.
-//     Conceptually `#deadlineExceeded(DL) == (#blockTimestamp() >Int DL)`; it is kept
-//     uninterpreted (no simplification rule defining it in terms of `#blockTimestamp()`) so that
-//     the arm-selection side condition stays a single atomic Bool the SMT solver can decide on,
-//     rather than a comparison between an uninterpreted function and a symbolic value.
+// DIRECT COMPARISON FORM. The rule branches on `#blockTimestamp() >Int DL` vs
+// `#blockTimestamp() <=Int DL` DIRECTLY — no Bool predicate intermediary. This is the change
+// from the earlier `#deadlineExceeded(DL)` form (see deadline.md "Direct form, concrete
+// conformance" for the rationale). The earlier predicate form was adopted because a SYMBOLIC
+// universal claim did not prove against a direct-comparison rule whose arms compared an
+// uninterpreted function to a SYMBOLIC value — but the proof it enabled was TAUTOLOGICAL: the
+// spec assumed `#deadlineExceeded(DL)` as a premise and the rule branched on the same predicate,
+// so the proof established nothing about whether the underlying `>` / `<=` matched Solidity.
+// Worse, krun could not reduce the predicate, so there was NO conformance evidence at all —
+// symbolic universality bought at the cost of zero real verification.
 //
-// WHY TWO SYMBOLS. The brief's suggested rule form `requires #blockTimestamp() >Int DEADLINE`
-// does NOT prove in this backend: a two-arm rule splitting on `#blockTimestamp() >Int X` vs
-// `#blockTimestamp() <=Int X` cannot have an arm excluded by a premise `#blockTimestamp() >Int
-// DL`, because the K Haskell backend's SMT encoding does not propagate the premise's inequality
-// on an uninterpreted-vs-symbolic comparison into a refutation of the opposite arm. This was
-// confirmed empirically: the same rule shape with `#balanceOf(...) <=Int 0` vs `>Int 0` (gate,
-// comparing to a CONSTANT) DOES prove, but the identical shape with `#testVal(...) >Int X` vs
-// `<=Int X` (comparing to a SYMBOLIC value) does NOT. Re-casting the branch condition as a Bool
-// predicate `#deadlineExceeded(DL)` makes the arm selection a direct `Bool` match: the REVERT
-// arm requires `#deadlineExceeded(DL)` and the PASS arm requires `notBool #deadlineExceeded(DL)`,
-// and a spec premise `#deadlineExceeded(DL)` selects the REVERT arm exactly as gate-spec's
-// `#balanceOf(...) ==Int 0` selects its REVERT arm. See deadline.md "Arm selection" for the full
-// diagnostic, including the minimal reproducer that isolates this backend behaviour from all the
-// decode/bytes machinery.
+// The direct form regains real verification at the cost of symbolic universality. A symbolic
+// universal claim over arbitrary DL does NOT prove in this form (same arm-selection limitation
+// that sank the earlier direct-form attempt: the K Haskell backend does not propagate an
+// inequality premise on an uninterpreted-vs-symbolic comparison into a refutation of the
+// opposite arm). CONCRETE claims, however, prove cleanly: with both `#blockTimestamp()` (fixed
+// by a premise) and DL concrete Ints, the SMT solver decides `>Int` / `<=Int` directly and arm
+// selection is immediate. So the concrete claims in `proofs/deadline-concrete.k` ARE the
+// conformance evidence — they verify the actual comparison against Solidity for fixed inputs,
+// which the predicate-form symbolic proof could never do.
 //
-// Both symbols honour the D4 boundary: neither has a defining rule, neither is a cell, and the
-// spec quantifies over timestamps via premises rather than assuming a value. Adding a `<timestamp>`
-// cell to swapvm.md was explicitly out of scope (six sibling subagents depend on swapvm.md being
-// untouched); these local declarations achieve the abstraction without that coordination cost.
+// `#blockTimestamp()` honours the D4 boundary: no defining rule, not a cell. Its value is fixed
+// by a premise in each concrete claim (e.g. `requires #blockTimestamp() ==Int 100`). Adding a
+// `<timestamp>` cell to swapvm.md was explicitly out of scope (six sibling subagents depend on
+// swapvm.md being untouched); this local declaration achieves the abstraction without that
+// coordination cost.
 
 module SWAPVM-DEADLINE
   imports SWAPVM
@@ -73,19 +74,9 @@ module SWAPVM-DEADLINE
   // abstraction boundary for the chain's `block.timestamp` environment input, per the task
   // brief. No defining rule: its value is fixed-but-unknown, constrained only by spec premises.
   // `[function, no-evaluators]` marks it as a total function symbol and prevents the simplifier
-  // from inventing a reduction. The rule below does NOT branch on this symbol directly — see
-  // `#deadlineExceeded` for why, and the file header for the full diagnostic.
+  // from inventing a reduction. The rule below branches on `#blockTimestamp() >Int DL` DIRECTLY
+  // (see file header); concrete claims fix `#blockTimestamp()` via a premise and prove cleanly.
   syntax Int ::= #blockTimestamp () [function, no-evaluators]
-
-  // A Bool predicate abstracting `block.timestamp >Int DEADLINE`. The RULE branches on this
-  // rather than on `#blockTimestamp() >Int DEADLINE` directly, because the K Haskell backend
-  // cannot exclude an arm of a two-arm rule whose side condition compares an uninterpreted
-  // function to a symbolic value (see file header). A spec premise `#deadlineExceeded(DL)`
-  // (implicitly `==Bool true`) selects the REVERT arm; `notBool #deadlineExceeded(DL)` would
-  // select the PASS arm. Conceptually `#deadlineExceeded(DL) == (#blockTimestamp() >Int DL)`;
-  // the two are kept as independent uninterpreted symbols (no simplification rule equating them)
-  // so the arm-selection condition stays decidable for the SMT solver.
-  syntax Bool ::= #deadlineExceeded ( Int ) [function, no-evaluators]
 
   // Canonical 5-byte Deadline, REVERT arm. Solidity:
   //   require(block.timestamp <= deadline, DeadlineReached(ctx.query.taker, deadline));
@@ -97,26 +88,22 @@ module SWAPVM-DEADLINE
   // guards on Stop, Revert, Jump, and Salt. The [owise] unknown-opcode rule (swapvm.md:349-351)
   // is overridden by this more specific rule regardless of which module each lives in: owise
   // rules have lower priority than concrete rules across the whole imported closure.
-  //
-  // Reads `Bytes2Int(ARGS, BE, Unsigned)` — the WHOLE ARGS — rather than a substr. See deadline.md
-  // "Why the rule reads the whole ARGS": under `lengthBytes(ARGS) ==Int 5` the two are equivalent,
-  // and the no-substr form reduces in one step via the round-trip lemma (lemmas.k:64-67).
   rule <k> #exec ( 32 , ARGS ) => #revert("DeadlineReached") ... </k>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 5
-     andBool #deadlineExceeded(Bytes2Int(ARGS, BE, Unsigned))
+     andBool #blockTimestamp() >Int Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)
 
   // Canonical 5-byte Deadline, PASS arm. `block.timestamp <= deadline`: the deadline has NOT
   // been exceeded, the require holds, and `_deadline` returns normally. The opcode is a no-op at
   // the register level — reads no register, writes no register, no `setNextPC` — so the
   // continuation #run is left in <k> and the loop proceeds to decode the next instruction. Like
   // Salt (opcodes/salt.k), Deadline is NOT a halt on this arm: an arbitrary symbolic tail in the
-  // program WILL be decoded after Deadline passes. The composition shape for positive claims
-  // therefore mirrors salt-spec.k / jump-spec.k, not gate-spec.k — see deadline.md "Composition".
+  // program WILL be decoded after Deadline passes. The composition shape for concrete claims
+  // terminates via the loop-exit rule (swapvm.md:100-105) when `<pc> = 7 >= lengthBytes(PGM)`.
   rule <k> #exec ( 32 , ARGS ) => .K ... </k>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 5
-     andBool notBool #deadlineExceeded(Bytes2Int(ARGS, BE, Unsigned))
+     andBool #blockTimestamp() <=Int Bytes2Int(substrBytes(ARGS, 0, 5), BE, Unsigned)
 
   // Non-canonical args: Solidity right-pads short and truncates long without reverting, which is
   // a soundness hazard (swapvm.md:301-324). Revert loudly here so a proof cannot silently

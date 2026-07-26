@@ -64,49 +64,60 @@ requires "../swapvm.md"
 //      forbids editing swapvm.md (six sibling subagents depend on it being untouched);
 //      this local declaration achieves the abstraction without that coordination cost.
 //
-// ARM SELECTION — why `#supplyShareSufficient(BALANCE, TOTALSUPPLY, MIN)` and not the
-// direct two-arm arithmetic form. The Solidity require is a CONJUNCTION of two
-// inequalities:
+// DIRECT TWO-ARM FORM — why the rule branches on the REAL arithmetic and not on an
+// abstracted Bool predicate. The Solidity require is a CONJUNCTION of two inequalities:
 //     totalSupply > 0
 //     balance * 1e18 >= minShareE18 * totalSupply
-// Both compare values derived from uninterpreted functions (`#balanceOf`, `#totalSupply`)
-// to SYMBOLIC values (`minShareE18`, and `0` for the first conjunct — though the second
-// conjunct also has `minShareE18 * totalSupply`, a product of symbolic and uninterpreted).
-// The diagnostic established by the Deadline subagent (opcodes/deadline.md:125-156) and
-// re-confirmed by the Gte subagent (opcodes/gte.md "Arm selection") is that the K Haskell
-// backend does NOT propagate an inequality premise on an uninterpreted-vs-symbolic
-// comparison into a refutation of the opposite arm of a two-arm rule. The gate
-// (swapvm.md:182-193) avoids this only because its arms compare `#balanceOf(...)` to a
-// CONSTANT (0), and constant reasoning IS propagated. Any direct two-arm form here —
-// `requires ... >=Int ... *Int ... andBool ... >Int 0` (PASS) vs the negation (REVERT) —
-// has EXACTLY the failure mode the diagnostic isolates: a spec premise
-// `notBool (#balanceOf(...) *Int 1e18 >=Int MIN *Int #totalSupply(...))` would not refute
-// the PASS arm, the PASS arm would not halt, the loop would run into the symbolic TAIL,
-// and the all-path claim would stall.
+// An earlier revision of this file abstracted that conjunction into a single Bool
+// predicate `#supplyShareSufficient(BAL, TS, MIN)` (conceptually
+// `TS >Int 0 && BAL *Int 1e18 >=Int MIN *Int TS`) and the rule branched on the predicate.
+// That revision is now judged WRONG for the SAME two reasons the Gte subagent documented
+// (opcodes/gte.k header, opcodes/gte.md "Direct form, concrete conformance"):
 //
-// The fix — same shape Deadline (opcodes/deadline.k:84-119) and Gte (opcodes/gte.k:103-148)
-// adopted — is to abstract the ENTIRE conjunction into a single Bool predicate
+//   1. The SYMBOLIC universal claim was TAUTOLOGICAL. `supplyshare-spec.k` assumed
+//      `notBool #supplyShareSufficient(...)` as a premise, and the rule's REVERT arm
+//      fired on the same predicate — so the "proof" assumed the predicate and then
+//      concluded under the predicate, establishing NOTHING about whether the underlying
+//      `<` / `>=` definition matched Solidity. A wrong definition (e.g. `<=Int` vs
+//      `<Int`, or comparing the wrong token, or missing the `totalSupply > 0` conjunct)
+//      would have passed identically. This is the worst kind of false confidence: green
+//      CI, no content.
+//   2. `krun` could not reduce the predicate either. With `[function, no-evaluators]` and
+//      no simplification rule equating the predicate to its underlying conjunction (the
+//      simplification rule was deliberately omitted because it would re-introduce the
+//      arm-selection issue — see below), a concrete `krun` on a SupplyShare program would
+//      leave `#supplyShareSufficient(BAL, TS, MIN)` as a residual symbol. So the predicate
+//      form had NO conformance evidence of any kind: not from kprove (the proof was
+//      tautological) and not from krun (the predicate does not reduce).
 //
-//     syntax Bool ::= #supplyShareSufficient ( Int , Int , Int ) [function, no-evaluators]
+// The DIRECT form restores MEANING to the comparison: the rule now says what the Solidity
+// says, and a wrong definition would be caught by any claim that exercises it.
 //
-// conceptually `#supplyShareSufficient(BALANCE, TOTALSUPPLY, MINSHAREE18)`
-//          == (TOTALSUPPLY >Int 0)
-//          andBool (BALANCE *Int 1e18 >=Int MINSHAREE18 *Int TOTALSUPPLY).
+// ARM-SELECTION LIMITATION — symbolic vs concrete claims. The K Haskell backend (v7.1.337,
+// the toolchain in this repo) does NOT propagate an inequality premise on an
+// uninterpreted-vs-symbolic comparison into a refutation of the opposite arm of a
+// two-arm rule (diagnostic in opcodes/deadline.md:125-156; re-confirmed for the Gte
+// opcode — see opcodes/gte.md "Arm selection"). Here BOTH conjuncts involve uninterpreted
+// functions compared to (or multiplied by) symbolic values:
 //
-// The RULE branches on this Bool (REVERT arm requires `notBool #supplyShareSufficient(...)`,
-// PASS arm requires `#supplyShareSufficient(...)`) — same shape as the working `0x23`
-// gate, which branches on `#balanceOf(...) >Int 0`, a comparison to a constant, and the
-// Deadline/Gte predicates. A spec premise `notBool #supplyShareSufficient(...)` (implicitly
-// `==Bool true`) then selects the REVERT arm exactly as `#balanceLtMin(TOK, MIN)` selects
-// Gte's REVERT arm and `#deadlineExceeded(DL)` selects Deadline's REVERT arm. The brief's
-// "CRITICAL lesson" directed going straight to the predicate form rather than attempting
-// the direct two-arm arithmetic form first; this file honours that.
+//   - `#totalSupply(...) >Int 0` — uninterpreted-vs-constant, which the gate (`0x23`) shows
+//     DOES propagate;
+//   - `#balanceOf(...) *Int 1e18 >=Int MIN *Int #totalSupply(...)` — uninterpreted-vs-
+//     symbolic on BOTH sides, which does NOT propagate.
 //
-// The three symbols (`#balanceOf`, `#totalSupply`, `#supplyShareSufficient`) are kept as
-// independent uninterpreted terms (no simplification rule equating the predicate with its
-// arithmetic expansion) so the arm-selection condition stays a single atomic Bool the SMT
-// solver can decide on. See supplyshare.md "Arm selection" for the cross-reference and
-// "Fidelity gaps" for what the abstraction costs.
+// Consequently a SYMBOLIC universal claim over arbitrary TOK/MIN/TAKER does NOT prove in
+// this direct form: the PASS arm is also explored, it does not halt, the loop runs into a
+// symbolic TAIL, and the all-path claim stalls. That trade is accepted (see below). The
+// conformance burden is carried by the TWO CONCRETE claims in
+// `proofs/supplyshare-concrete.k`: with `#balanceOf`, `#totalSupply`, and `MIN` all
+// reduced to concrete Ints — the first via the defining rule on a concrete `<balances>`
+// cell, the second via a spec premise, the third via a concrete `Int2Bytes(8, MIN, BE)`
+// payload — the entire conjunction becomes a concrete arithmetic fact the SMT solver
+// decides immediately, exactly as for the Gte concrete claims (proofs/gte-concrete.k).
+//
+// The trade is asymmetric and correct: concrete conformance is REAL verification, the
+// tautological symbolic claim was not. Should the K backend grow the missing SMT
+// propagation, the symbolic universal claim can be reinstated on top of the direct form.
 
 module SWAPVM-SUPPLYSHARE
   imports SWAPVM
@@ -114,34 +125,18 @@ module SWAPVM-SUPPLYSHARE
   // The token's total supply, as an uninterpreted total function of the token address.
   // This is the PLAN.md D4 abstraction boundary for the external `IERC20(token).totalSupply()`
   // read in Controls.sol:172, per the task brief. No defining rule: its value is
-  // fixed-but-unknown, constrained only by spec premises. `[function, no-evaluators]` marks
+  // fixed-but-unknown, constrained only by spec premises (a concrete claim pins it via a
+  // premise like `requires #totalSupply(1) ==Int 1000`). `[function, no-evaluators]` marks
   // it as a total function symbol and prevents the simplifier from inventing a reduction.
-  // The rule below does NOT branch on this symbol directly — see `#supplyShareSufficient`
-  // for why, and the file header for the full diagnostic.
   syntax Int ::= #totalSupply ( Int ) [function, no-evaluators]
-
-  // A Bool predicate abstracting the Solidity require's full conjunction
-  //   totalSupply > 0  &&  balance * 1e18 >= minShareE18 * totalSupply
-  // (Controls.sol:175). The RULE branches on this rather than on the arithmetic directly,
-  // because the K Haskell backend cannot exclude an arm of a two-arm rule whose side
-  // condition compares an uninterpreted function (`#balanceOf`, `#totalSupply`) to a
-  // SYMBOLIC value (`MIN`, and the symbolic product `MIN *Int #totalSupply(...)`) — see
-  // file header and supplyshare.md "Arm selection", cross-referencing
-  // opcodes/deadline.md:125-156 and opcodes/gte.md. A spec premise
-  // `notBool #supplyShareSufficient(BAL, TS, MIN)` (implicitly `==Bool true`) selects the
-  // REVERT arm; `#supplyShareSufficient(BAL, TS, MIN)` would select the PASS arm.
-  // Conceptually
-  //   #supplyShareSufficient(BAL, TS, MIN)
-  //     == (TS >Int 0) andBool (BAL *Int 1000000000000000000 >=Int MIN *Int TS)
-  // but the two are kept as independent uninterpreted symbols (no simplification rule
-  // equating them) so the arm-selection condition stays decidable for the SMT solver.
-  syntax Bool ::= #supplyShareSufficient ( Int , Int , Int ) [function, no-evaluators]
 
   // Canonical 28-byte SupplyShare, REVERT arm. Solidity:
   //   require(totalSupply > 0 && balance * 1e18 >= minShareE18 * totalSupply,
   //           TakerTokenBalanceSupplyShareIsLessThanRequired(...));
   // reverts iff the conjunction FAILS — i.e. iff `totalSupply == 0` OR
-  // `balance * 1e18 < minShareE18 * totalSupply`. `#revert(MSG) ~> _ => .K`
+  // `balance * 1e18 < minShareE18 * totalSupply`. The negation is written out IN FULL
+  // (no predicate abstraction) so the rule's side condition is the literal negation of the
+  // PASS arm's side condition. `1e18 = 1000000000000000000`. `#revert(MSG) ~> _ => .K`
   // (swapvm.md:154-156) clears the continuation and sets <status> Reverted(MSG), so the
   // loop never resumes and an arbitrary symbolic tail in the program cannot affect the
   // conclusion. The `Running` side condition guards against SupplyShare firing after a
@@ -155,10 +150,10 @@ module SWAPVM-SUPPLYSHARE
        <balances> B </balances>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 28
-     andBool notBool #supplyShareSufficient(
-               #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER),
-               #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)),
-               Bytes2Int(substrBytes(ARGS, 20, 28), BE, Unsigned) )
+     andBool notBool ( #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)) >Int 0
+                       andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER) *Int 1000000000000000000
+                               >=Int Bytes2Int(substrBytes(ARGS, 20, 28), BE, Unsigned)
+                                 *Int #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)) )
 
   // Canonical 28-byte SupplyShare, PASS arm. The conjunction holds — `totalSupply > 0`
   // AND `balance * 1e18 >= minShareE18 * totalSupply` — the require passes, and
@@ -168,18 +163,19 @@ module SWAPVM-SUPPLYSHARE
   // Like Salt (opcodes/salt.k), Deadline (opcodes/deadline.k), and Gte (opcodes/gte.k),
   // SupplyShare is NOT a halt on this arm: an arbitrary symbolic tail in the program WILL
   // be decoded after SupplyShare passes. The composition shape for positive claims
-  // therefore mirrors gate-spec.k / deadline-spec.k / gte-spec.k on the REVERT arm (HALT,
-  // tail unconsumed) and would mirror salt-spec.k / jump-spec.k on the PASS arm (no halt,
-  // must terminate concretely); the minimum positive claim here covers the REVERT arm only.
+  // therefore mirrors gate-spec.k / deadline-spec.k / gte-concrete.k on the REVERT arm
+  // (HALT, tail unconsumed) and would mirror salt-spec.k / jump-spec.k / gte-concrete.k
+  // on the PASS arm (no halt, must terminate concretely); both arms are exercised in
+  // proofs/supplyshare-concrete.k.
   rule <k> #exec ( 37 , ARGS ) => .K ... </k>
        <query> ... <taker> TAKER </taker> ... </query>
        <balances> B </balances>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 28
-     andBool #supplyShareSufficient(
-               #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER),
-               #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)),
-               Bytes2Int(substrBytes(ARGS, 20, 28), BE, Unsigned) )
+     andBool #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)) >Int 0
+     andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER) *Int 1000000000000000000
+             >=Int Bytes2Int(substrBytes(ARGS, 20, 28), BE, Unsigned)
+               *Int #totalSupply(Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned))
 
   // Non-canonical args: Solidity right-pads short and truncates long without reverting,
   // which is a soundness hazard (swapvm.md:301-324). Revert loudly here so a proof cannot

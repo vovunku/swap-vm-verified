@@ -135,48 +135,172 @@ requires "../swapvm.md"
 
 module SWAPVM-WHITELISTS
   imports SWAPVM
+  imports SWAPVM-DEADLINE       // for #blockTimestamp() — declared once in deadline.k to avoid parsing ambiguity
 
-  // The current block timestamp, as an uninterpreted total function. This is the PLAN.md D4
-  // abstraction boundary for the chain's `block.timestamp` environment input, mirroring the
-  // declaration in opcodes/deadline.k:78. No defining rule: its value is fixed-but-unknown,
-  // constrained only by spec premises. The 0x2d rule below does NOT branch on this symbol
-  // directly — it appears only conceptually inside `#sequentialWhitelistJumps/Reverts` — but
-  // the declaration lets a spec reason about the timestamp when needed.
-  syntax Int ::= #blockTimestamp () [function, no-evaluators]
+  // `#blockTimestamp()` is declared in opcodes/deadline.k:79 and brought into scope here via
+  // `imports SWAPVM-DEADLINE` above. Declaring it again in this module caused a parsing
+  // ambiguity in the integrated build (K qualified the two declarations as distinct symbols:
+  // `#blockTimestamp()_SWAPVM-DEADLINE_Int` vs `..._SWAPVM-WHITELISTS_Int`). The 0x2d rules
+  // below branch on this symbol DIRECTLY: the PRE-LOOP REVERT arm tests
+  // `#blockTimestamp() <Int start` (mirroring Whitelist.sol:147), and the other three arms pass
+  // `#blockTimestamp() -Int start` as the `timeLeft` argument to #seqOutcome. A concrete claim
+  // fixes the timestamp via a premise (e.g. `requires #blockTimestamp() ==Int 10`) so the
+  // recursion reduces to a concrete outcome.
 
-  // True iff (TAKER modInt 2^80) matches some packed entry in ARGS[2:]. The result of the
-  // 0x2c while loop, abstracted. The byte-level list parsing (`args.slice(2)`,
-  // `list.parseWhitelistCoequalIx(i)`, the `i--` iteration) is NOT modelled; this predicate
-  // encapsulates its outcome. A spec premise `#coequalWhitelistContains(ARGS, TAKER modInt 2^80)`
-  // selects the JUMP arm; its negation selects the FALL-THROUGH arm.
-  syntax Bool ::= #coequalWhitelistContains ( Bytes , Int ) [function, no-evaluators]
-
-  // True iff the 0x2d loop matches (TAKER modInt 2^80) at the entry unlocked by
-  // `block.timestamp`. Conceptually:
-  //   block.timestamp >= start
-  //   && exists k: start + Σ_{j<k} duration[j] <= block.timestamp
-  //                       < start + Σ_{j<=k} duration[j]
-  //              && sender == allowedTaker[k]
-  // The start-vs-timestamp comparison, the duration arithmetic, the in-window revert, and the
-  // byte-level list parsing are ALL INSIDE this predicate — not modelled directly. A spec
-  // premise `#sequentialWhitelistJumps(ARGS, TAKER modInt 2^80)` selects the JUMP arm.
-  syntax Bool ::= #sequentialWhitelistJumps ( Bytes , Int ) [function, no-evaluators]
-
-  // True iff the 0x2d loop hits the in-window revert — either `block.timestamp < start`, OR
-  // at some entry whose address != (TAKER modInt 2^80) we have `timeLeft < duration` and the
-  // require fires. Same encapsulation boundary as #sequentialWhitelistJumps. A spec premise
-  // `#sequentialWhitelistReverts(ARGS, TAKER modInt 2^80)` selects the REVERT arm.
+  // ============================================================
+  // BEGIN 0x2c scope (WhitelistCoequal subagent). DO NOT TOUCH the
+  // `#sequential*` declarations or any `0x2d` rule below — those are
+  // the WhitelistSequential subagent's write scope.
+  // ============================================================
   //
-  // MUTUAL EXCLUSIVITY: by Solidity control flow #sequentialWhitelistJumps and
-  // #sequentialWhitelistReverts can never both hold (a JUMP returns before any REVERT can
-  // fire, and a REVERT aborts before any later JUMP can match). This fact is NOT enforced by
-  // K — the two predicates are independent uninterpreted symbols. A spec that selects one arm
-  // must trust this exclusivity itself; see whitelists.md "Fidelity gaps".
-  syntax Bool ::= #sequentialWhitelistReverts ( Bytes , Int ) [function, no-evaluators]
+  // #coequalContains(LIST, PACKED): does any 10-byte entry in LIST equal PACKED?
+  //
+  // A RECURSIVE FUNCTION that mirrors the Solidity `while (i-- > 0)` loop in
+  // Whitelist.sol:120-128 faithfully. The previous form was an uninterpreted
+  // Bool predicate `#coequalWhitelistContains(ARGS, PACKED)` with `[no-evaluators]`,
+  // which made every symbolic claim tautological (the spec asserted the
+  // predicate and the rule branched on it) and gave zero conformance evidence.
+  // Replacing it with a `[function]` (definitional, evaluatable) makes CONCRETE
+  // lists reduce to a concrete Bool — so the new concrete claims
+  // (proofs/whitelistcoequal-concrete.k) verify the actual byte-level match
+  // against Solidity for fixed inputs, exactly as gte-concrete.k verifies the
+  // actual `>=Int` comparison. On SYMBOLIC lists the recursion is STUCK (neither
+  // rule's `requires` reduces), which is the honest posture: no false symbolic
+  // claim, no spurious `#Top`. The old symbolic spec/control pair
+  // (whitelistcoequal-spec.k, -control.k) is DELETED in favour of the concrete
+  // claims — see whitelists.md "What the K rules do".
+  //
+  // The recursion is on the LIST TAIL: at each step, compare the first 10 bytes
+  // to PACKED and recurse on the rest. This mirrors the Solidity loop direction
+  // (which counts `i` DOWN from `list.length / 10`), so the byte-level decision
+  // matches on-chain evaluation order. The caller passes the post-header slice
+  // `substrBytes(ARGS, 2, lengthBytes(ARGS))` so LIST always has length `N*10`
+  // (the canonical-pitch constraint in the 0x2c rules below guarantees this);
+  // the function therefore never sees a sub-multiple length and is total on its
+  // domain.
+  syntax Bool ::= #coequalContains ( Bytes , Int ) [function]
+
+  // Base case: empty list, no entry matches. Mirrors `while (i-- > 0)` exiting
+  // immediately when `list.length / 10 == 0`.
+  rule #coequalContains(LIST, PACKED) => false
+    requires lengthBytes(LIST) ==Int 0
+
+  // Recursive case: at least one 10-byte entry remains. Compare the first
+  // entry to PACKED and recurse on the rest. `Bytes2Int(substrBytes(LIST, 0, 10),
+  // BE, Unsigned)` mirrors `list.parseWhitelistCoequalIx(i)` (bytes10 → uint80,
+  // big-endian, unsigned) and `substrBytes(LIST, 10, lengthBytes(LIST))` is the
+  // remaining list passed to the next iteration.
+  rule #coequalContains(LIST, PACKED)
+    => ( Bytes2Int(substrBytes(LIST, 0, 10), BE, Unsigned) ==Int PACKED )
+       orBool #coequalContains(substrBytes(LIST, 10, lengthBytes(LIST)), PACKED)
+    requires lengthBytes(LIST) >=Int 10
+  // ============================================================
+  // END 0x2c scope (declarations)
+  // ============================================================
+
+  // ============================================================
+  // BEGIN 0x2d scope (WhitelistSequential subagent). The recursive
+  // `#seqOutcome` function and outcome constants below model the
+  // Solidity `while (i < length)` loop in Whitelist.sol:155-165
+  // faithfully. The previous form was two uninterpreted Bool predicates
+  // (`#sequentialWhitelistJumps`, `#sequentialWhitelistReverts`) with
+  // `[no-evaluators]`, which made every symbolic claim tautological (the
+  // spec asserted the predicate and the rule branched on it) and gave
+  // zero conformance evidence — AND the actual time-aware loop was not
+  // modelled at all. Replacing them with a `[function]` (definitional,
+  // evaluatable) makes CONCRETE lists+timestamps reduce to a concrete
+  // outcome — so the new concrete claims (proofs/whitelistsequential-
+  // concrete.k) verify the actual byte-level + time-arithmetic behaviour
+  // against Solidity for fixed inputs, exactly as gte-concrete.k verifies
+  // the actual `>=Int` comparison and whitelistcoequal-concrete.k verifies
+  // the 0x2c byte-level match. On SYMBOLIC lists the recursion is STUCK
+  // (neither rule's `requires` reduces), which is the honest posture: no
+  // false symbolic claim, no spurious `#Top`. The old symbolic spec/control
+  // pair (whitelistsequential-spec.k, -control.k) is DELETED in favour of
+  // the concrete claims — see whitelists.md "What the K rules do".
+  // ============================================================
+
+  // Outcome tags for #seqOutcome. Each is a 0-arity [function] that reduces
+  // to a literal Int, so the four-arm rule's premise
+  // `#seqOutcome(...) ==Int #wlJump()` is decidable after the recursion
+  // reduces on concrete input. (CamelCase rather than SCREAMING_SNAKE_CASE because
+  // the K default lexer for `#`-prefixed symbols does not accept underscores.)
+  syntax Int ::= #wlJump ()        [function]
+  syntax Int ::= #wlRevert ()      [function]
+  syntax Int ::= #wlFallthrough () [function]
+  rule #wlJump()        => 0
+  rule #wlRevert()      => 1
+  rule #wlFallthrough() => 2
+
+  // #seqOutcome(LIST, TIMELEFT, PACKED): walks the Solidity loop body by body.
+  //   LIST     = args.slice(7) — the post-header slice (12-byte entries only).
+  //   TIMELEFT = block.timestamp - start (caller preconditions: ts >= start).
+  //   PACKED   = TAKER modInt 2^80 — the taker's low 80 bits.
+  //
+  // Per entry (12 bytes): duration = Bytes2Int(LIST[0:2], BE, Unsigned),
+  // allowedTaker = Bytes2Int(LIST[2:12], BE, Unsigned). This mirrors
+  // `parseWhitelistSequentialIx` (Whitelist.sol:73-79): `duration := shr(240, word)`
+  // is the high 16 bits = first 2 bytes of the entry; `allowedTaker :=
+  // and(shr(160, word), 0xffff...ffff)` is bits [160, 256) = the next 10 bytes.
+  // Solidity counts entries UP from i=0, matching the head-first recursion here.
+  //
+  // The recursion mirrors Whitelist.sol:155-165 EXACTLY:
+  //   while (i < length) {
+  //     (allowedTaker, duration) = list.parseWhitelistSequentialIx(i++);
+  //     if (sender == allowedTaker) return JUMP;          // entry matches → JUMP
+  //     if (timeLeft < duration)  return REVERT;          // window exclusive → REVERT
+  //     timeLeft -= duration;                             // window expired, advance
+  //   }
+  //   return FALLTHROUGH;                                 // i == length
+  //
+  // The address-match check happens BEFORE the duration check, faithfully mirroring the
+  // Solidity `if (sender == allowedTaker) {...return;}` preceding `if (timeLeft < duration)
+  // revert` (Whitelist.sol:158-163). Reordering them would change the outcome when the
+  // matching entry is past an expired-but-not-reverted window — a real divergence.
+  syntax Int ::= #seqOutcome ( Bytes , Int , Int ) [function]
+
+  // Base case: LIST exhausted (i == length in Solidity). FALL THROUGH — anyone may proceed.
+  rule #seqOutcome(LIST, TIMELEFT, PACKED) => #wlFallthrough()
+    requires lengthBytes(LIST) ==Int 0
+
+  // Entry matches → JUMP. Mirrors `if (sender == allowedTaker) { ctx.vm.nextPC = pc; return; }`.
+  // The address comparison happens BEFORE the duration check, matching Solidity order; the
+  // TIMELEFT argument is not consulted here, exactly as in the source.
+  rule #seqOutcome(LIST, TIMELEFT, PACKED) => #wlJump()
+    requires lengthBytes(LIST) >=Int 12
+     andBool Bytes2Int(substrBytes(LIST, 2, 12), BE, Unsigned) ==Int PACKED
+
+  // Entry doesn't match AND window still exclusive → REVERT. Mirrors
+  // `if (timeLeft < duration) revert WhitelistAllowedTimeViolation();`.
+  rule #seqOutcome(LIST, TIMELEFT, PACKED) => #wlRevert()
+    requires lengthBytes(LIST) >=Int 12
+     andBool Bytes2Int(substrBytes(LIST, 2, 12), BE, Unsigned) =/=Int PACKED
+     andBool TIMELEFT <Int Bytes2Int(substrBytes(LIST, 0, 2), BE, Unsigned)
+
+  // Entry doesn't match AND window expired → advance. Mirrors `timeLeft -= duration;`
+  // followed by the next loop iteration. Recurse on the 12-byte tail with the new TIMELEFT.
+  rule #seqOutcome(LIST, TIMELEFT, PACKED)
+    => #seqOutcome(substrBytes(LIST, 12, lengthBytes(LIST)),
+                   TIMELEFT -Int Bytes2Int(substrBytes(LIST, 0, 2), BE, Unsigned),
+                   PACKED)
+    requires lengthBytes(LIST) >=Int 12
+     andBool Bytes2Int(substrBytes(LIST, 2, 12), BE, Unsigned) =/=Int PACKED
+     andBool TIMELEFT >=Int Bytes2Int(substrBytes(LIST, 0, 2), BE, Unsigned)
+  // ============================================================
+  // END 0x2d scope (declarations)
+  // ============================================================
 
   // ------------------------------------------------------------
   // 0x2c WhitelistCoequal — args = 2 bytes pc + N*10 bytes packed addresses.
   // ------------------------------------------------------------
+  //
+  // BEGIN 0x2c scope (rules). The two canonical-pitch arms below branch on the
+  // RECURSIVE `#coequalContains` function (declared above), which faithfully
+  // evaluates the Solidity `while (i-- > 0)` loop on the post-header slice
+  // `substrBytes(ARGS, 2, lengthBytes(ARGS))`. The previous uninterpreted
+  // predicate `#coequalWhitelistContains(ARGS, ...)` made every symbolic claim
+  // tautological; this form makes CONCRETE claims (gte-concrete.k shape)
+  // genuine conformance evidence — see proofs/whitelistcoequal-concrete.k.
 
   // Canonical-pitch args, JUMP arm. The taker's low 80 bits are in the list: the loop
   // matches, `ctx.vm.nextPC = args.parseWhitelistCoequalPC()` (= uint16 of ARGS[0:2]), and
@@ -190,7 +314,7 @@ module SWAPVM-WHITELISTS
        <status> Running </status>
     requires lengthBytes(ARGS) >=Int 2
      andBool (lengthBytes(ARGS) -Int 2) modInt 10 ==Int 0
-     andBool #coequalWhitelistContains(ARGS, TAKER modInt (2 ^Int 80))
+     andBool #coequalContains(substrBytes(ARGS, 2, lengthBytes(ARGS)), TAKER modInt (2 ^Int 80))
 
   // Canonical-pitch args, FALL-THROUGH arm. The taker's low 80 bits are NOT in the list:
   // the loop exits without matching, the function returns normally, and execution continues
@@ -203,7 +327,8 @@ module SWAPVM-WHITELISTS
        <status> Running </status>
     requires lengthBytes(ARGS) >=Int 2
      andBool (lengthBytes(ARGS) -Int 2) modInt 10 ==Int 0
-     andBool notBool #coequalWhitelistContains(ARGS, TAKER modInt (2 ^Int 80))
+     andBool notBool #coequalContains(substrBytes(ARGS, 2, lengthBytes(ARGS)), TAKER modInt (2 ^Int 80))
+  // END 0x2c scope (rules).
 
   // Non-canonical args: Solidity silently reads a different list than the maker encoded
   // (right-pad on short args; ignored trailing partial on off-pitch args) without reverting,
@@ -218,40 +343,73 @@ module SWAPVM-WHITELISTS
   // ------------------------------------------------------------
   // 0x2d WhitelistSequential — args = 2 bytes pc + 5 bytes start + N*(2 dur + 10 addr).
   // ------------------------------------------------------------
+  //
+  // BEGIN 0x2d scope (rules). The four canonical-pitch arms below branch on the
+  // RECURSIVE `#seqOutcome` function (declared above), which faithfully
+  // evaluates the Solidity `while (i < length)` loop on the post-header slice
+  // `substrBytes(ARGS, 7, lengthBytes(ARGS))` with
+  // `timeLeft = #blockTimestamp() -Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)`.
+  // The previous uninterpreted-predicate form made every symbolic claim
+  // tautological; this form makes CONCRETE claims (gte-concrete.k shape)
+  // genuine conformance evidence — see proofs/whitelistsequential-concrete.k.
+  // A separate top-level arm handles `#blockTimestamp() <Int start` (the
+  // pre-loop revert in Whitelist.sol:147) since #seqOutcome assumes ts >= start
+  // (its TIMELEFT argument is `ts - start` and must be non-negative).
 
-  // Canonical-pitch args, JUMP arm. The taker matches the entry unlocked at the current
-  // block.timestamp. `ctx.vm.nextPC = pc` and the function returns. The decode-advanced <pc>
-  // is OVERWRITTEN, mirroring Jump and the 0x2c JUMP arm above.
+  // Canonical-pitch args, PRE-LOOP REVERT arm. block.timestamp < start: the very
+  // first check in the Solidity body fires (Whitelist.sol:147), before the loop
+  // is even entered. Mirrors `if (timeLeft < start) revert ...; timeLeft -= start;`.
+  // Note: start is the 5-byte big-endian read at ARGS[2:7] (parseWhitelistSequentialStartPC
+  // — Whitelist.sol:63-69: `ts := and(shr(200, word), 0xffffffffff)` is the middle 5 bytes).
+  rule <k> #exec ( 45 , ARGS ) => #revert("WhitelistAllowedTimeViolation") ... </k>
+       <query> ... <taker> TAKER </taker> ... </query>
+       <status> Running </status>
+    requires lengthBytes(ARGS) >=Int 7
+     andBool (lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0
+     andBool #blockTimestamp() <Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)
+
+  // Canonical-pitch args, JUMP arm. ts >= start AND #seqOutcome returns #wlJump: the taker's
+  // low 80 bits match an entry reached before timeLeft runs out. `ctx.vm.nextPC = pc` and the
+  // function returns. The decode-advanced <pc> is OVERWRITTEN with the uint16 read at
+  // ARGS[0:2], mirroring Jump (opcodes/jump.k) and the 0x2c JUMP arm above.
   rule <k> #exec ( 45 , ARGS ) => .K ... </k>
        <pc> _ => Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned) </pc>
        <query> ... <taker> TAKER </taker> ... </query>
        <status> Running </status>
     requires lengthBytes(ARGS) >=Int 7
      andBool (lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0
-     andBool #sequentialWhitelistJumps(ARGS, TAKER modInt (2 ^Int 80))
+     andBool #blockTimestamp() >=Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)
+     andBool #seqOutcome(substrBytes(ARGS, 7, lengthBytes(ARGS)),
+                         #blockTimestamp() -Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned),
+                         TAKER modInt (2 ^Int 80)) ==Int #wlJump()
 
-  // Canonical-pitch args, REVERT arm. Either `block.timestamp < start` OR the loop hit an
-  // entry whose address != taker but whose duration has not yet elapsed (`timeLeft <
-  // duration`). The Solidity revert is `WhitelistAllowedTimeViolation()` (Whitelist.sol:101,
-  // 147, 163). `#revert(MSG) ~> _ => .K` (swapvm.md:154-156) clears the continuation.
+  // Canonical-pitch args, IN-WINDOW REVERT arm. ts >= start AND #seqOutcome returns
+  // #wlRevert: the loop hit an entry whose address != taker but whose duration has not yet
+  // elapsed (`timeLeft < duration`). The Solidity revert is `WhitelistAllowedTimeViolation()`
+  // (Whitelist.sol:163). `#revert(MSG) ~> _ => .K` (swapvm.md:154-156) clears the continuation.
   rule <k> #exec ( 45 , ARGS ) => #revert("WhitelistAllowedTimeViolation") ... </k>
        <query> ... <taker> TAKER </taker> ... </query>
        <status> Running </status>
     requires lengthBytes(ARGS) >=Int 7
      andBool (lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0
-     andBool #sequentialWhitelistReverts(ARGS, TAKER modInt (2 ^Int 80))
+     andBool #blockTimestamp() >=Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)
+     andBool #seqOutcome(substrBytes(ARGS, 7, lengthBytes(ARGS)),
+                         #blockTimestamp() -Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned),
+                         TAKER modInt (2 ^Int 80)) ==Int #wlRevert()
 
-  // Canonical-pitch args, FALL-THROUGH arm. Neither JUMP nor REVERT: the loop iterates past
-  // every entry without matching the taker, and `timeLeft >= duration` for every entry, so
-  // every window has expired and execution continues normally at the decode-advanced <pc>.
-  // Same no-halt posture as the 0x2c FALL-THROUGH arm.
+  // Canonical-pitch args, FALL-THROUGH arm. ts >= start AND #seqOutcome returns
+  // #wlFallthrough: the loop iterated past every entry without matching the taker, with
+  // `timeLeft >= duration` at every entry — every window has expired, so anyone may proceed.
+  // Inherits the decode-advanced <pc>; same no-halt posture as the 0x2c FALL-THROUGH arm.
   rule <k> #exec ( 45 , ARGS ) => .K ... </k>
        <query> ... <taker> TAKER </taker> ... </query>
        <status> Running </status>
     requires lengthBytes(ARGS) >=Int 7
      andBool (lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0
-     andBool notBool #sequentialWhitelistJumps(ARGS, TAKER modInt (2 ^Int 80))
-     andBool notBool #sequentialWhitelistReverts(ARGS, TAKER modInt (2 ^Int 80))
+     andBool #blockTimestamp() >=Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)
+     andBool #seqOutcome(substrBytes(ARGS, 7, lengthBytes(ARGS)),
+                         #blockTimestamp() -Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned),
+                         TAKER modInt (2 ^Int 80)) ==Int #wlFallthrough()
 
   // Non-canonical args: same pad-and-truncate hazard as 0x2c. Revert loudly.
   rule <k> #exec ( 45 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>

@@ -30,11 +30,11 @@ same posture as Revert, Salt, and Deadline.
 
 Three rules in `opcodes/gte.k`:
 
-1. **REVERT arm** — canonical `lengthBytes(ARGS) ==Int 52`, premise `#balanceLtMin(TOK, MIN)`
-   (conceptually `#balanceOf(B, TOK, TAKER) <Int MIN`): reverts with
+1. **REVERT arm** — canonical `lengthBytes(ARGS) ==Int 52`, condition
+   `#balanceOf(B, TOK, TAKER) <Int MIN`: reverts with
    `"TakerTokenBalanceIsLessThanRequired"`, clears `<k>`, sets `<status>`.
-2. **PASS arm** — canonical length, premise `notBool #balanceLtMin(TOK, MIN)`: no-op, leaves
-   `#run` in `<k>`, loop proceeds.
+2. **PASS arm** — canonical length, condition `#balanceOf(B, TOK, TAKER) >=Int MIN`: no-op,
+   leaves `#run` in `<k>`, loop proceeds.
 3. **UNMODELLED-ARGS-LENGTH arm** — `lengthBytes(ARGS) =/=Int 52`: reverts loudly with
    `"UNMODELLED-ARGS-LENGTH"` so a proof cannot silently succeed on a wrong length.
 
@@ -48,7 +48,7 @@ Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)   // minAmount
 Under `lengthBytes(ARGS) ==Int 52` these are the exact 20- and 32-byte big-endian reads the
 Solidity does, and the round-trip lemma (`lemmas.k:64-67`) rewrites each `Bytes2Int(Int2Bytes(...))`
 back to the symbolic Int the spec supplies, under the standard width bounds
-(`0 <=Int TOK <Int 2^160`, `0 <=Int MIN`).
+(`0 <=Int TOK <Int 2^160`, `0 <=Int MIN <Int 2^256`).
 
 `<balances>` is consulted via `#balanceOf` (`swapvm.md:171-174`), the existing abstraction
 boundary for ERC-20 state (`PLAN.md` D4). Gte reads `#balanceOf(B, token, taker)` — no new
@@ -64,84 +64,89 @@ same revert-or-pass structure, same `<pc>` posture — except Gte's args carry a
 `minAmount` after the 20-byte token, and the revert reason differs
 (`TakerTokenBalanceIsLessThanRequired` vs `TakerTokenBalanceIsZero`).
 
-## Arm selection — why `#balanceLtMin(TOK, MIN)` and not `#balanceOf(...) <Int MIN`
+The K rule mirrors the gate's two-arm shape directly: the gate splits on
+`#balanceOf(...) >Int 0` vs `<=Int 0` (comparison to a constant), Gte splits on
+`#balanceOf(...) <Int MIN` vs `>=Int MIN` (comparison to a value read from args).
 
-The gate rule (`swapvm.md:182-193`) splits on `#balanceOf(...) >Int 0` vs `<=Int 0`, and a spec
-premise `#balanceOf(...) ==Int 0` selects the REVERT arm — but this works ONLY because the
-comparison is to a **constant** (0). The K Haskell backend (v7.1.337, the toolchain in this
-repo) propagates constant reasoning about `#balanceOf` immediately.
+## Direct form, concrete conformance — why not the predicate form
 
-The Deadline subagent's diagnostic (`opcodes/deadline.md:125-156`) established the failure mode
-for the symbolic case. A minimal reproducer with a fake opcode:
+The rule branches on the DIRECT comparison
 
 ```k
-syntax Int ::= #testVal ( Int ) [function, no-evaluators]
-
-rule <k> #exec ( 200 , ARGS ) => #revert("REVERTED") ... </k>
-  requires lengthBytes(ARGS) ==Int 1 andBool #testVal(0) >Int Bytes2Int(ARGS, BE, Unsigned)
-
-rule <k> #exec ( 200 , ARGS ) => .K ... </k>
-  requires lengthBytes(ARGS) ==Int 1 andBool #testVal(0) <=Int Bytes2Int(ARGS, BE, Unsigned)
+#balanceOf(B, TOK, TAKER) <Int MIN     (REVERT)
+#balanceOf(B, TOK, TAKER) >=Int MIN    (PASS)
 ```
 
-with premise `#testVal(0) >Int X` **fails to prove**: the SMT encoding does not propagate the
-inequality premise on an uninterpreted-vs-symbolic comparison into a refutation of the opposite
-arm, so the PASS arm is also explored, the PASS arm does not halt, the loop runs into a
-symbolic tail, and the all-path claim stalls.
+rather than on an abstracted Bool predicate. An earlier revision of this opcode used a predicate
+`#balanceLtMin(TOK, MIN)` (conceptually `#balanceOf(BALS, TOK, TAKER) <Int MIN`) and a symbolic
+universal claim `proofs/gte-spec.k` branched on it. That revision was WRONG and has been
+reverted. Two independent problems:
 
-Gte compares `#balanceOf(B, TOK, TAKER)` to a **symbolic** `MIN` (read from args). This is the
-exact failure shape. A spec premise `#balanceOf(BALS, TOK, TAKER) <Int MIN` would NOT refute
-the `>=Int MIN` PASS arm.
+1. **The symbolic claim was TAUTOLOGICAL.** `gte-spec.k` assumed `#balanceLtMin(TOK, MIN)` as a
+   premise, and the rule's REVERT arm fired on the same `#balanceLtMin(TOK, MIN)` — so the
+   "proof" assumed the predicate and then concluded under the predicate, establishing NOTHING
+   about whether the underlying `<` / `>=` definition matched Solidity. A wrong definition
+   (e.g. `<=Int MIN` vs `<Int MIN`, or comparing the wrong token) would have passed identically.
+   This is the worst kind of false confidence: green CI, no content.
+2. **krun could not reduce the predicate either.** With `[function, no-evaluators]` and no
+   simplification rule equating the predicate to the underlying comparison (the simplification
+   rule was deliberately omitted because it would re-introduce the arm-selection issue — see
+   below), a concrete `krun` on a Gte program would leave `#balanceLtMin(1, 10)` as a residual
+   symbol. So the predicate form had NO conformance evidence of any kind: not from kprove (the
+   proof was tautological) and not from krun (the predicate does not reduce).
 
-The fix is the same shape Deadline adopted (`opcodes/deadline.k:84-119`): abstract the
-comparison itself into a Bool predicate,
+The direct form restores MEANING to the comparison: the rule now says what the Solidity says,
+and a wrong definition would be caught by any claim that exercises it.
 
-```k
-syntax Bool ::= #balanceLtMin ( Int , Int ) [function, no-evaluators]
-```
+### Why the symbolic universal claim no longer proves
 
-conceptually `#balanceLtMin(TOK, MIN) == (#balanceOf(BALS, TOK, TAKER) <Int MIN)`, and branch on
-the Bool. The REVERT arm requires `#balanceLtMin(TOK, MIN)` and the PASS arm requires
-`notBool #balanceLtMin(TOK, MIN)`. A spec premise `#balanceLtMin(TOK, MIN)` (implicitly
-`==Bool true`) then selects the REVERT arm exactly as `#balanceOf(...) ==Int 0` selects the
-gate's REVERT arm and `#deadlineExceeded(DL)` selects Deadline's REVERT arm — a direct Bool
-match that the SMT solver decides on without needing to reason through an inequality on an
-uninterpreted function.
+The direct form has a known limitation: a SYMBOLIC universal claim over arbitrary `TOK`, `MIN`,
+and `TAKER` does NOT prove. The K Haskell backend (v7.1.337, the toolchain in this repo) does
+not propagate an inequality premise on an uninterpreted-vs-symbolic comparison into a
+refutation of the opposite arm of a two-arm rule. With arms `#balanceOf(...) <Int MIN` vs
+`>=Int MIN` and a premise `#balanceOf(...) <Int MIN`, the PASS arm is still explored, the PASS
+arm does not halt (it leaves `#run` in `<k>`), the loop runs into the symbolic `TAIL`, and the
+all-path claim stalls. This is the same failure mode the Deadline subagent's diagnostic
+isolated (`opcodes/deadline.md:125-156`) with a minimal reproducer: a fake opcode with arms
+`#testVal(0) >Int X` vs `<=Int X` and premise `#testVal(0) >Int X` FAILS to prove.
 
-### Why the predicate takes `(TOK, MIN)` and not `(BALS, TOK, TAKER, MIN)`
+The gate rule (`swapvm.md:182-193`) avoids this only because its arms compare `#balanceOf(...)`
+to a CONSTANT (`0`), not a symbolic value, and constant reasoning IS propagated. Gte compares
+to a SYMBOLIC `MIN` (read from args), so the direct form is exposed.
 
-The rule is keyed on `(TOK, MIN)` — the two values derived from the rule's two `substrBytes`
-reads on `ARGS` — not on `(BALS, TOK, TAKER, MIN)`, because `BALS` and `TAKER` are cells whose
-identity is fixed by the rule's LHS pattern, and only `(TOK, MIN)` are local to the opcode. The
-conceptual identity is `#balanceLtMin(TOK, MIN) == (#balanceOf(BALS, TOK, TAKER) <Int MIN)` for
-the `BALS` and `TAKER` in the rule's context. Keeping the predicate's arity at 2 means a spec
-premise is written exactly as the rule sees the comparison, with no extra cells to thread
-through.
+### The right trade: concrete claims
 
-### Two-arm form tried first, per the brief
+The arm-selection limitation does NOT affect CONCRETE claims. With both `#balanceOf(B, TOK,
+TAKER)` and `MIN` reduced to concrete Ints — the former by `#balanceOf`'s defining rule on a
+concrete `<balances>` cell, the latter by a concrete `Int2Bytes(32, MIN, BE)` payload — the
+`<Int` / `>=Int` split is a concrete arithmetic fact the SMT solver decides immediately, with
+no uninterpreted-vs-symbolic comparison in the way.
 
-The task brief asked to try the direct two-arm form first and fall back to the predicate form
-if kprove stalled on the positive spec. Given the Deadline diagnostic already in the tree, the
-direct form was used as the **starting** rule; the predicate form is what shipped. The direct
-form would be:
+The two concrete claims in `proofs/gte-concrete.k` therefore ARE the conformance evidence: each
+runs a fully-concrete 54-byte program through `#run` and asserts the exact final `<pc>` and
+`<status>`. A concrete claim that proves under kprove is the operational equivalent of having
+`krun` the program — and unlike the predicate form, krun CAN reduce the direct comparison on a
+concrete `<balances>` cell.
 
-```k
-rule <k> #exec ( 36 , ARGS ) => #revert("TakerTokenBalanceIsLessThanRequired") ... </k>
-     ...
-  requires lengthBytes(ARGS) ==Int 52
-   andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER)
-           <Int Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
+The trade is asymmetric and correct: concrete conformance is REAL verification, the
+tautological symbolic claim was not. The symbolic universal claim is sacrificed; the concrete
+claims are added. Should the K backend grow the missing SMT propagation, the symbolic universal
+claim can be reinstated on top of the direct form (the prior `gte-spec.k` shape, minus the
+predicate).
 
-rule <k> #exec ( 36 , ARGS ) => .K ... </k>
-     ...
-  requires lengthBytes(ARGS) ==Int 52
-   andBool #balanceOf(B, Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned), TAKER)
-           >=Int Bytes2Int(substrBytes(ARGS, 20, 52), BE, Unsigned)
-```
+### Diagnostic cross-reference
 
-— the symbolic-vs-`#balanceOf` shape that the diagnostic shows does not drive arm selection.
-The shipped predicate form is the settlement; the direct form is recorded here for the audit
-trail and for the day the backend grows the missing SMT propagation.
+The arm-selection limitation was isolated with the same minimal reproducer recorded in
+`opcodes/deadline.md:125-156`: a fake opcode `200` with three shapes — comparison to a constant
+(proves), comparison to a symbolic value via inequality premise (fails), Bool predicate
+(proves). The reproducer was run in-tree against the same kompiled definition shape the real
+proof uses, so the result is on the same backend, not a toy. The Gte change here adopts the
+"comparison to a symbolic value" shape directly and accepts its consequence; the Deadline and
+SupplyShare opcodes (`opcodes/deadline.k`, `opcodes/supplyshare.k`) chose the predicate shape
+instead, because their symbolic universal claims were NOT tautological (their premises
+constrained the predicate, not a separate uninterpreted function with its own definition). Gte's
+situation differs: there was nothing to constrain independently — the predicate WAS the
+comparison — so the predicate form collapsed into tautology.
 
 ## Pad-and-truncate soundness hazard (swapvm.md:301-324)
 
@@ -188,9 +193,8 @@ status for opcodes `0x23`, `0x90`, `0x03` (Jump), and `0x20` (Deadline).
 1. `requires "opcodes/gte.k"` at the top (alongside the existing `requires "swapvm.md"` and
    the other opcode `requires`), so K parses the file and `SWAPVM-GTE` is available to import.
 2. `imports SWAPVM-GTE` inside `module SWAPVM-BYTES-LEMMAS` (alongside the existing
-   `imports SWAPVM` and the other opcode imports), so the Gte rules — and the `#balanceLtMin`
-   syntax — are in scope for every spec that imports `SWAPVM-BYTES-LEMMAS` (which is all of
-   them).
+   `imports SWAPVM` and the other opcode imports), so the Gte rules are in scope for every spec
+   that imports `SWAPVM-BYTES-LEMMAS` (which is all of them).
 
 A single `requires` alone is **not** sufficient: K does not auto-import the modules of a
 required file into the main module. (See `opcodes/jump.md` "Integration",
@@ -198,24 +202,27 @@ required file into the main module. (See `opcodes/jump.md` "Integration",
 `requires "../swapvm.md"` — resolving relative to its own directory — so it kompiles correctly
 when invoked as `kompile ... lemmas.k` from `semantics/` without an `-I` flag.
 
-And in `semantics/run-proofs.sh`, add two entries to `SPECS`:
+`run-proofs.sh` is not currently integrated (the harness is build-and-kprove only in this
+environment); when it is re-wired, the prior entries
 
 ```
-'gte-spec|prove'                  # Gte reverts when balance < minAmount, any tail
-'gte-control|fail'                # same premises, asserts Running — must fail
+'gte-spec|prove'                  # DELETED — symbolic claim was tautological under predicate form
+'gte-control|fail'                # DELETED — sensitivity twin of the tautological claim
 ```
+
+should NOT be re-added. The concrete claims in `proofs/gte-concrete.k` replace them; a harness
+entry per claim would look like `gte-concrete|prove`.
 
 ## Fidelity gaps (declared per `PLAN.md` D3, D4, D5)
 
-- **`#balanceLtMin(TOK, MIN)` does not reduce to `#balanceOf(B, TOK, TAKER) <Int MIN`.**
-  Conceptually the two are equal, but the model deliberately provides no simplification rule
-  equating them, because doing so would re-introduce the arm-selection problem this whole
-  structure exists to avoid (see "Arm selection"). A spec that constrains both symbols
-  independently (e.g. `#balanceOf(BALS, TOK, TAKER) <Int MIN` AND `#balanceLtMin(TOK, MIN)`)
-  is making two uncorrelated claims about two uninterpreted symbols; if a future proof needs
-  them correlated, that is a lemma to add then, with the arm-selection consequence worked out.
-  This is the same trade-off Deadline made with `#deadlineExceeded` vs `#blockTimestamp`
-  (`opcodes/deadline.md:239-245`).
+- **No symbolic universal claim.** The direct two-arm form does not support a symbolic
+  universal claim over arbitrary `TOK` / `MIN` / `TAKER` because the K Haskell backend does not
+  propagate an inequality premise on an uninterpreted-vs-symbolic comparison into a refutation
+  of the opposite arm (see "Direct form, concrete conformance"). The conformance burden is
+  carried instead by the two CONCRETE claims in `proofs/gte-concrete.k`, which prove and
+  exercise the real `<Int` / `>=Int` split on fixed inputs. This is more evidence than the
+  prior predicate form provided (its symbolic claim was tautological; see above). The trade is
+  asymmetric and correct.
 - **Non-canonical args unmodelled.** Solidity right-pads short `args` and truncates long ones
   without reverting; the model reverts with `"UNMODELLED-ARGS-LENGTH"` for any `args.length`
   other than 52. This makes the gap loud rather than silent (`swapvm.md:314-316`), in the same
@@ -230,7 +237,9 @@ And in `semantics/run-proofs.sh`, add two entries to `SPECS`:
   `opcodes/revert.k` for `InstructionRevert` and in `opcodes/deadline.md:251-255` for
   `DeadlineReached`.
 - **`ADMITTED`.** Per the trust model in `PLAN.md` §5a, every instruction rule starts
-  `ADMITTED`. This one is not yet exercised by the conformance harness.
+  `ADMITTED`. This opcode is exercised by the concrete conformance claims in
+  `proofs/gte-concrete.k` (both arms), cross-checked against the Solidity side in
+  `test/conformance/InstructionConformance.t.sol`.
 
 ## Composition
 
@@ -238,17 +247,16 @@ Gte is **like** the gate (`proofs/gate-spec.k`) on the REVERT arm and **unlike**
 PASS arm:
 
 - The REVERT arm halts: `#revert` clears the continuation (`swapvm.md:154-156`), so any tail in
-  the program is unconsumed. A positive claim can quantify over an arbitrary symbolic `TAIL`
-  exactly as `gate-spec.k` and `deadline-spec.k` do. This is what `proofs/gte-spec.k` does —
-  it pins the premise `#balanceLtMin(TOK, MIN)` to select the REVERT arm, then quantifies over
-  `TAIL`.
+  the program is unconsumed. A positive claim could in principle quantify over an arbitrary
+  symbolic `TAIL` exactly as `gate-spec.k` and `deadline-spec.k` do — except that the direct
+  two-arm form does not support such a symbolic claim (see "Direct form, concrete conformance").
 - The PASS arm does not halt: it leaves `#run` in `<k>`, so the loop proceeds to decode the
   byte at the next `<pc>`. An arbitrary symbolic tail therefore cannot be the basis of a clean
   terminating claim, for the same reason it cannot in `salt-spec.k`, `jump-spec.k`, and
   `deadline-spec.k`: with a symbolic tail the first byte of the tail is symbolic and no decode
-  rule reduces, so the prover gets stuck with a residual indistinguishable from a false claim's
-  (the failure mode that sank the first `negative-control.k` — `proofs/README.md:27-34`). A
-  PASS-arm positive claim must instead terminate concretely, e.g. by making the program exactly
-  the 54-byte Gte and letting the loop-exit rule (`swapvm.md:100-105`) fire when
-  `<pc> = 54 >= lengthBytes(PGM)`. The minimum positive claim here covers the REVERT arm only;
-  a PASS-arm twin is sketched but not added to keep the spec tight.
+  rule reduces, so the prover gets stuck with a residual indistinguishable from a false claim's.
+
+Both arms therefore terminate CONCRETELY in the claims in `proofs/gte-concrete.k`: the program
+is exactly the 54-byte Gte and the loop-exit rule (`swapvm.md:100-105`) fires when
+`<pc> = 54 >= lengthBytes(PGM)`. The two claims cover both arms (REVERT for `balance < MIN`,
+PASS for `balance >= MIN`, including the boundary `balance == MIN`).
