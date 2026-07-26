@@ -1,12 +1,40 @@
 # Deploying the demo
 
-The demo runs in two modes from one codebase. What differs is whether a prover is reachable.
+Three builds from one codebase. They differ in what is reachable at the other end of a
+button, and each says which one it is.
 
-| | `python3 demo/server.py` | Vercel |
-|---|---|---|
-| Explain / compose / disassemble | live | live |
-| **Run the proof** (`kprove`) | live | replayed, labelled `↺` |
-| **Run for real** (`forge`) | live | replayed, labelled `↺` |
+| | `python3 demo/server.py` | Vercel | GitHub Pages |
+|---|---|---|---|
+| Compose your own program | live | live | **not offered** |
+| Explain / disassemble | live | live | prebaked per example |
+| **Run the proof** (`kprove`) | live | replayed `↺` | replayed `↺` |
+| **Run for real** (`forge`) | live | replayed `↺` | replayed `↺` |
+| Needs a process | yes | one function | **no** |
+
+## GitHub Pages — the fully static build
+
+`./prebake.py` writes `docs/index.html`: one self-contained file, no fetch, no API, no
+process. Every answer is computed at bake time by the same `server.py` functions the live
+demo calls, for each of the 13 shipped programs, and frozen.
+
+```bash
+cd demo && ./record_runs.py && ./prebake.py
+```
+
+Then on GitHub: **Settings → Pages → Source: Deploy from a branch → Branch `vk/demo`,
+folder `/docs`**. It serves at `https://vovunku.github.io/swap-vm-verified/`.
+
+The playground is deliberately absent rather than present-but-broken. Composing a program
+means assembling and checking it, which needs Python; a page that offered the controls and
+then failed on submit would be worse than one that does not offer them. What remains is
+every shipped example with what the tools actually returned for it — and a footer saying so.
+
+`prebake.py` refuses to run if any recorded proof is not OK, because a page baked from a
+broken recording looks exactly like one baked from a good recording.
+
+Tested by `node test/static-page.mjs` (25 checks), which deletes `fetch` and `XMLHttpRequest`
+before parsing — so any attempt to reach the network is a hard failure rather than a blank
+panel that still photographs well.
 
 ## Why the hosted site cannot prove
 
