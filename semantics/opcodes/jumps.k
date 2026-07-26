@@ -67,4 +67,42 @@ module SWAPVM-JUMPS
   rule <k> #exec ( 48 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
     requires lengthBytes(ARGS) =/=Int 3
 
+  // 0x31 JumpIfTokenIn — Controls.sol:105-115.
+  //
+  // args = 20 bytes token + 2 bytes nextPC (uint16 BE).
+  // Jump iff address(bytes20(args)) == ctx.query.tokenIn.
+  //
+  // Solidity: `address token = address(bytes20(args)); if (token == ctx.query.tokenIn)
+  // { uint256 nextPC = uint16(bytes2(args.slice(20))); ctx.setNextPC(nextPC); }`.
+  //
+  // ARM-SELECTION NOTE. The first draft of this rule put `Bytes2Int(substrBytes(ARGS, 0, 20),
+  // BE, Unsigned)` directly in the <tokenIn> cell pattern of the LHS to force unification.
+  // kompile rejects that with "Illegal function symbol ... on LHS of rule": K forbids hooked
+  // function symbols (substrBytes, Bytes2Int) inside cell patterns on the LHS of a semantic
+  // rule. The fallback — and the form used here — is a side condition
+  // `TIN ==Int Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)` on the jump arm, paired with
+  // `=/=Int` on the fall-through arm. Logically equivalent; the Haskell backend discharge is on
+  // the side condition rather than on pattern unification. (An alternative would be a Bool
+  // predicate `#jumpIfTokenInHolds(ARGS, TIN)`, but the direct side condition kompiles and
+  // proves, so the predicate indirection is unnecessary.)
+
+  // Branch taken — token prefix of ARGS equals tokenIn; overwrite <pc>.
+  rule <k> #exec ( 49 , ARGS ) => .K ... </k>
+       <pc> _ => Bytes2Int(substrBytes(ARGS, 20, 22), BE, Unsigned) </pc>
+       <tokenIn> TIN </tokenIn>
+       <status> Running </status>
+    requires lengthBytes(ARGS) ==Int 22
+     andBool TIN ==Int Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
+
+  // Branch not taken — no-op, <pc> keeps its decode-advanced value.
+  rule <k> #exec ( 49 , ARGS ) => .K ... </k>
+       <tokenIn> TIN </tokenIn>
+       <status> Running </status>
+    requires lengthBytes(ARGS) ==Int 22
+     andBool TIN =/=Int Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
+
+  // Non-canonical args — revert loudly.
+  rule <k> #exec ( 49 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
+    requires lengthBytes(ARGS) =/=Int 22
+
 endmodule
