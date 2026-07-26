@@ -1,0 +1,449 @@
+{
+ "definition": {
+  "definition": "swapvm-full",
+  "sha256_16": "e5b48173c4f57a84",
+  "workspace": "/home/user/sem2"
+ },
+ "executions": {
+  "__bad|0": {
+   "GATE": "0x0000000000000000000000000000000000000090",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "unknown selector 0x",
+   "raw": [],
+   "recorded": true,
+   "selector": "",
+   "status": "reverted"
+  },
+  "__bad|5": {
+   "GATE": "0x0000000000000000000000000000000000000090",
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x",
+   "raw": [],
+   "recorded": true,
+   "selector": "",
+   "status": "reverted"
+  },
+  "__dust|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "__dust|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x08c379a0",
+   "raw": [],
+   "recorded": true,
+   "selector": "08c379a0",
+   "status": "reverted"
+  },
+  "__good|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "__good|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "amountIn": "1000000000000000000",
+   "amountOut": "2000000000000000000",
+   "available": true,
+   "balanceIn": "1000000000000000000000",
+   "balanceOut": "2000000000000000000000",
+   "config": {
+    "gateBalance": 5
+   },
+   "nextPC": "91",
+   "raw": [],
+   "recorded": true,
+   "status": "completed"
+  },
+  "argsOverrun|0": {
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "unknown selector 0x9b9dc719",
+   "raw": [],
+   "recorded": true,
+   "selector": "9b9dc719",
+   "status": "reverted"
+  },
+  "argsOverrun|5": {
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x9b9dc719",
+   "raw": [],
+   "recorded": true,
+   "selector": "9b9dc719",
+   "status": "reverted"
+  },
+  "catalogue|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "catalogue|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "amountIn": "1000000000000000000",
+   "amountOut": "2000000000000000000",
+   "available": true,
+   "balanceIn": "1000000000000000000000",
+   "balanceOut": "2000000000000000000000",
+   "config": {
+    "gateBalance": 5
+   },
+   "nextPC": "91",
+   "raw": [],
+   "recorded": true,
+   "status": "completed"
+  },
+  "floorNonDividing|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "floorNonDividing|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "amountIn": "1000000000000000000",
+   "amountOut": "2333333333333333333",
+   "available": true,
+   "balanceIn": "3",
+   "balanceOut": "7",
+   "config": {
+    "gateBalance": 5
+   },
+   "nextPC": "91",
+   "raw": [],
+   "recorded": true,
+   "status": "completed"
+  },
+  "floorNotCeil|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "floorNotCeil|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "amountIn": "1000000000000000000",
+   "amountOut": "666666666666666666",
+   "available": true,
+   "balanceIn": "3",
+   "balanceOut": "2",
+   "config": {
+    "gateBalance": 5
+   },
+   "nextPC": "91",
+   "raw": [],
+   "recorded": true,
+   "status": "completed"
+  },
+  "gateRejects|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "gateRejects|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "amountIn": "1000000000000000000",
+   "amountOut": "0",
+   "available": true,
+   "balanceIn": "0",
+   "balanceOut": "0",
+   "config": {
+    "gateBalance": 5
+   },
+   "nextPC": "22",
+   "raw": [],
+   "recorded": true,
+   "status": "completed"
+  },
+  "loneOpcode|0": {
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "unknown selector 0x9b9dc719",
+   "raw": [],
+   "recorded": true,
+   "selector": "9b9dc719",
+   "status": "reverted"
+  },
+  "loneOpcode|5": {
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x9b9dc719",
+   "raw": [],
+   "recorded": true,
+   "selector": "9b9dc719",
+   "status": "reverted"
+  },
+  "revPrices|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "revPrices|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x90de6352",
+   "raw": [],
+   "recorded": true,
+   "selector": "90de6352",
+   "status": "reverted"
+  },
+  "revRecomputeOut|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "revRecomputeOut|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x90de6352",
+   "raw": [],
+   "recorded": true,
+   "selector": "90de6352",
+   "status": "reverted"
+  },
+  "revRecompute|0": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "TakerTokenBalanceIsZero(address taker, address token)",
+   "raw": [],
+   "recorded": true,
+   "selector": "9669f955",
+   "status": "reverted"
+  },
+  "revRecompute|5": {
+   "GATE": "0x00000000000000000000000000000000000000AA",
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x90de6352",
+   "raw": [],
+   "recorded": true,
+   "selector": "90de6352",
+   "status": "reverted"
+  },
+  "zeroArg|0": {
+   "available": true,
+   "config": {
+    "gateBalance": 0
+   },
+   "error": "unknown selector 0x08c379a0",
+   "raw": [],
+   "recorded": true,
+   "selector": "08c379a0",
+   "status": "reverted"
+  },
+  "zeroArg|5": {
+   "available": true,
+   "config": {
+    "gateBalance": 5
+   },
+   "error": "unknown selector 0x08c379a0",
+   "raw": [],
+   "recorded": true,
+   "selector": "08c379a0",
+   "status": "reverted"
+  }
+ },
+ "proofs": {
+  "__dust": {
+   "available": true,
+   "commands": [
+    "kprove --definition swapvm-full proofs/dustproof-spec.k",
+    "kprove --definition swapvm-full proofs/dustproof-control.k"
+   ],
+   "control": {
+    "available": true,
+    "exit": 1,
+    "expected": "must FAIL",
+    "seconds": 5.1,
+    "spec": "dustproof-control",
+    "stuck": true,
+    "top": false,
+    "verdict": "failed as required"
+   },
+   "ok": true,
+   "recorded": true,
+   "spec": {
+    "available": true,
+    "exit": 0,
+    "expected": "#Top",
+    "seconds": 5.1,
+    "spec": "dustproof-spec",
+    "stuck": false,
+    "top": true,
+    "verdict": "PROVED"
+   }
+  },
+  "__good": {
+   "available": true,
+   "commands": [
+    "kprove --definition swapvm-full proofs/pricing-spec.k",
+    "kprove --definition swapvm-full proofs/pricing-negative-control.k"
+   ],
+   "control": {
+    "available": true,
+    "exit": 1,
+    "expected": "must FAIL",
+    "seconds": 5.1,
+    "spec": "pricing-negative-control",
+    "stuck": true,
+    "top": false,
+    "verdict": "failed as required"
+   },
+   "ok": true,
+   "recorded": true,
+   "spec": {
+    "available": true,
+    "exit": 0,
+    "expected": "#Top",
+    "seconds": 5.1,
+    "spec": "pricing-spec",
+    "stuck": false,
+    "top": true,
+    "verdict": "PROVED"
+   }
+  },
+  "catalogue": {
+   "available": true,
+   "commands": [
+    "kprove --definition swapvm-full proofs/pricing-spec.k",
+    "kprove --definition swapvm-full proofs/pricing-negative-control.k"
+   ],
+   "control": {
+    "available": true,
+    "exit": 1,
+    "expected": "must FAIL",
+    "seconds": 5.2,
+    "spec": "pricing-negative-control",
+    "stuck": true,
+    "top": false,
+    "verdict": "failed as required"
+   },
+   "ok": true,
+   "recorded": true,
+   "spec": {
+    "available": true,
+    "exit": 0,
+    "expected": "#Top",
+    "seconds": 5.1,
+    "spec": "pricing-spec",
+    "stuck": false,
+    "top": true,
+    "verdict": "PROVED"
+   }
+  },
+  "gateRejects": {
+   "available": true,
+   "commands": [
+    "kprove --definition swapvm-full proofs/gate-spec.k",
+    "kprove --definition swapvm-full proofs/negative-control.k"
+   ],
+   "control": {
+    "available": true,
+    "exit": 1,
+    "expected": "must FAIL",
+    "seconds": 4.2,
+    "spec": "negative-control",
+    "stuck": true,
+    "top": false,
+    "verdict": "failed as required"
+   },
+   "ok": true,
+   "recorded": true,
+   "spec": {
+    "available": true,
+    "exit": 0,
+    "expected": "#Top",
+    "seconds": 4.2,
+    "spec": "gate-spec",
+    "stuck": false,
+    "top": true,
+    "verdict": "PROVED"
+   }
+  }
+ },
+ "recorded_at": "2026-07-26T03:31:28+00:00"
+}

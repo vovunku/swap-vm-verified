@@ -265,20 +265,31 @@ async function prove(){
       'It does not generate one, and it will not guess.', null, null); return;
   }
   const sp = r.spec, ct = r.control;
+  // A replayed run must never read as a live one. On the hosted site there is no prover to
+  // start, so `prove` returns a run that really happened -- and says so, with its date.
+  const when = r.recorded
+    ? `Recorded run, ${(r.recorded_at||'').replace('T',' ').replace('+00:00',' UTC')}`
+    : 'Ran just now';
+  const how = r.recorded
+    ? ` This page has no prover behind it — it replays a run against K definition `+
+      `${r.definition||'?'}. Re-run it yourself: see VERIFY.md.`
+    : ` — not a cached verdict, not a pattern match.`;
   $('#exec').innerHTML =
+    (r.recorded ? `<div class="src" style="margin-bottom:10px">↺ replayed, not live — `+
+      `kprove needs the K definition and up to 10 min; this host has neither</div>` : '') +
     verdictBlock(sp.top?'yes':'err', sp.top?'PROVED':'NOT PROVED',
       `${esc(sp.spec)}.k — kprove returned ${sp.top?'#Top':'no proof'}`,
       sp.top ? 'The theorem holds for every input in its stated domain.'
              : 'kprove did not return #Top.',
-      `Ran just now in ${sp.seconds}s against the compiled K definition — not a cached verdict, `+
-      `not a pattern match.`, null, `dustproof/semantics/${sp.spec}.k`) +
+      `${when} in ${sp.seconds}s against the compiled K definition${how}`,
+      null, `dustproof/semantics/${sp.spec}.k`) +
     verdictBlock(ct.exit!==0?'yes':'err', ct.exit!==0?'CONTROL OK':'CONTROL PROVED',
       `${esc(ct.spec)}.k — ${esc(ct.verdict)}`,
       ct.exit!==0 ? 'A deliberately false twin of the theorem. It must fail, and it did.'
                   : 'The false claim PROVED. The rule set is inconsistent and every result above is void.',
       `A proof that cannot fail proves nothing. This is the only check that catches an `+
       `inconsistent rule set, which otherwise proves everything while looking like total success. `+
-      `Ran in ${ct.seconds}s.`, null, `dustproof/semantics/${ct.spec}.k`);
+      `${when} in ${ct.seconds}s.`, null, `dustproof/semantics/${ct.spec}.k`);
 }
 
 async function execute(){
@@ -292,7 +303,11 @@ async function execute(){
     $('#exec').innerHTML = verdictBlock('info','OFFLINE','Executed tier unavailable',
       r.error||'container not reachable', null, null, null); return;
   }
-  $('#exec').innerHTML = r.status==='completed'
+  const rep = r.recorded
+    ? `<div class="src" style="margin-bottom:10px">↺ replayed, not live — this host has no `+
+      `Foundry; recorded ${(r.recorded_at||'').replace('T',' ').replace('+00:00',' UTC')}</div>`
+    : '';
+  $('#exec').innerHTML = rep + (r.status==='completed'
     ? verdictBlock('yes','EXECUTED','Ran to completion',
         `amountIn ${r.amountIn} → amountOut ${r.amountOut}`,
         `Real ContextLib.runLoop, real instruction bodies. Final pc ${r.nextPC}; maker reserves ${r.balanceIn} / ${r.balanceOut}.`,
@@ -301,7 +316,7 @@ async function execute(){
         'test/conformance/InstructionConformance.t.sol')
     : verdictBlock('err','EXECUTED','Reverted', r.error||'reverted',
         `The program was executed and the real VM rejected it. Gate token ${r.GATE||''}.`,
-        null, 'test/conformance/InstructionConformance.t.sol');
+        null, 'test/conformance/InstructionConformance.t.sol'));
 }
 
 function clearResults(){

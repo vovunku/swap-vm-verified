@@ -46,6 +46,44 @@ MODELLED = set(CLAIMS['coverage']['modelled_list'])
 PROOFS = json.loads((DATA / 'proofs.json').read_text())
 SPECDOCS = json.loads((DATA / 'specdocs.json').read_text())
 
+# Runs that really happened, frozen by record_runs.py. See LIVE below for when they are used.
+RUNS = json.loads((DATA / 'runs.json').read_text()) if (DATA / 'runs.json').exists() else {}
+
+# LIVE decides whether `prove`/`execute` shell out or replay.
+#
+# The two of them need `kprove` and `forge` inside the kontrol container -- a multi-gigabyte
+# K definition and proofs that take 5 s to 10 min. A serverless host has none of that and
+# caps a request at 60 s, so on Vercel this is False and the endpoints replay `runs.json`.
+#
+# THE REPLAY IS LABELLED, ALWAYS. Every replayed response carries `recorded: True`, the
+# timestamp, and the exact command, and the UI prints them. A recording shown as a live run
+# would be precisely the fake this project argues against -- so the fallback is allowed to
+# be less impressive, and is not allowed to be silent.
+LIVE = os.environ.get('DEMO_LIVE', '0' if os.environ.get('VERCEL') else '1') == '1'
+
+# Optional escape hatch: a box that CAN prove. Set DEMO_BACKEND to the base URL of another
+# copy of this server running with DEMO_LIVE=1 (a laptop behind cloudflared, say) and the
+# hosted site forwards prove/execute there instead of replaying. If that box is unreachable
+# the request falls back to the recording rather than erroring -- degrading to a labelled
+# replay beats a demo that dies when the wifi does.
+BACKEND = os.environ.get('DEMO_BACKEND', '').rstrip('/')
+
+
+def _forward(endpoint: str, payload: dict):
+    """POST to the live backend. Returns None on any failure, so callers can fall back."""
+    if not BACKEND:
+        return None
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(
+            f'{BACKEND}/api/{endpoint}', data=json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
 # Block palette. `args` describes the fields a user edits; `size` is the byte width each
 # field occupies, matching the *ArgsBuilder helpers in src/instructions/.
 BLOCKS = [
@@ -193,10 +231,12 @@ def curated() -> list:
          'expect': {'pc': 91, 'status': 'Running', 'amountOut': None}},
         {'label': '__bad', 'title': 'The same order, one byte wrong', 'kind': 'bad',
          'bytes': bad, 'length': len(bad) // 2,
-         'note': ('The gate declares 19 argument bytes instead of 20. It still runs and still prices — '
-                  'but it now gates a DIFFERENT address, because a short value is zero-padded rather '
-                  'than rejected. The gate theorem stops applying. This defect class is recorded in '
-                  'commit 129aa48.'),
+         'note': ('The gate declares 19 argument bytes instead of 20. Nothing rejects that: a short '
+                  'value is zero-padded rather than refused, so the gate silently re-points from '
+                  '0x…AA to 0x…90 — it absorbed the next opcode byte. T0 stops applying. Run it and '
+                  'the real VM reverts, because the rest of the program is now misaligned too; the '
+                  'K model instead no-ops past it. That gap between "reverts" and "quietly continues" '
+                  'is the defect class recorded in commit 129aa48.'),
          'expect': {'pc': 90, 'status': 'Running', 'amountOut': None}},
         {'label': '__dust', 'title': 'DustProof — an Aqua dust order', 'kind': 'good',
          'bytes': dust, 'length': len(dust) // 2,
@@ -342,7 +382,7 @@ EXEC_WORKSPACE = os.environ.get('DEMO_EXEC_WS', '/home/user/fee-work')
 EXEC_CONTAINER = os.environ.get('DEMO_EXEC_CONTAINER', 'kontrol')
 
 
-def execute(hexstr: str, cfg: dict) -> dict:
+def execute_live(hexstr: str, cfg: dict) -> dict:
     """EXECUTED tier: run the composed program through the real ContextLib.runLoop.
 
     Inputs go in by environment variable so the test contract never changes and Foundry
@@ -403,7 +443,7 @@ def _kprove(spec: str) -> dict:
             'stuck': 'WarnStuckClaimState' in out}
 
 
-def prove(label: str) -> dict:
+def prove_live(label: str) -> dict:
     """Run the spec/control pair for an example. No pattern matching, no agent — this
     executes the prover and reports what it returned."""
     pair = PROOF_PAIRS.get(label)
@@ -425,6 +465,54 @@ def prove(label: str) -> dict:
                     'verdict': 'failed as required' if control['exit'] != 0
                                else 'PROVED — the rule set is INCONSISTENT and every result is void'},
     }
+
+
+# ---------------------------------------------------------------------------------------
+# Live-or-replay. The only difference between the local demo and the hosted one.
+# ---------------------------------------------------------------------------------------
+
+def _replay_note(rec: dict) -> dict:
+    """Stamp a frozen result so the caller cannot mistake it for a live run."""
+    return {**rec, 'recorded': True,
+            'recorded_at': RUNS.get('recorded_at'),
+            'definition': RUNS.get('definition', {}).get('sha256_16')}
+
+
+def prove(label: str) -> dict:
+    if LIVE:
+        return {**prove_live(label), 'recorded': False}
+    fwd = _forward('prove', {'label': label})
+    if fwd and fwd.get('available'):
+        return {**fwd, 'recorded': False, 'via': BACKEND}
+    rec = RUNS.get('proofs', {}).get(label)
+    if rec:
+        return _replay_note(rec)
+    return {'available': False, 'recorded': True,
+            'error': (f'no recorded run for {label!r}. The hosted site replays proofs that '
+                      'were run for real; it cannot start a prover. Run it yourself with '
+                      '`./semantics/run-proofs.sh` — see VERIFY.md.')}
+
+
+def execute(hexstr: str, cfg: dict) -> dict:
+    if LIVE:
+        return {**execute_live(hexstr, cfg), 'recorded': False}
+    fwd = _forward('execute', {'hex': hexstr, 'config': cfg})
+    if fwd and fwd.get('available'):
+        return {**fwd, 'recorded': False, 'via': BACKEND}
+    # Match by program bytes AND gate state, not by label: the front sends hex, and a
+    # program the user edited is a different program even if it started from an example.
+    label = _BY_HEX.get(hexstr.lower().removeprefix('0x'))
+    rec = RUNS.get('executions', {}).get(f'{label}|{cfg.get("gateBalance", 0)}') if label else None
+    if rec:
+        return _replay_note(rec)
+    return {'available': False, 'recorded': True,
+            'error': ('this program has no recorded run. The hosted site replays the shipped '
+                      'examples through the real VM; running an arbitrary program needs '
+                      'Foundry and the repo locally — see demo/README.md.')}
+
+
+_BY_HEX = {(e.get('bytes') or '').lower(): e.get('label')
+           for e in (EXAMPLES + curated()) if e.get('bytes')}
 
 
 class Handler(BaseHTTPRequestHandler):
