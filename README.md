@@ -15,6 +15,55 @@ For a catalog of strategy types and composition examples, see `docs/PROGRAMS.md`
 
 ---
 
+## About this fork — formal verification for SwapVM and for what people build on it
+
+SwapVM makes a trading strategy **data** rather than a contract: a maker ships bytecode, the
+VM runs it. That is the whole point of the design, and it is also what makes auditing the VM
+insufficient. An audit covers the interpreter. Every composite program written afterwards is
+new attack surface that ships with no audit at all, and there will be far more programs than
+there are instructions.
+
+So the problem has two layers, and this fork addresses both.
+
+**1 — The instructions.** Specifications and proofs for SwapVM's own instruction
+implementations, run with [Kontrol](https://github.com/runtimeverification/kontrol) against
+the compiled bytecode rather than against a model of it. 281 properties across 13 instruction
+suites: argument-bound guards, rounding direction, overflow reachability, dead-code claims.
+Each carries the evidence tier that produced it, and the ones that are still open say so.
+
+**2 — The programs.** A handwritten [K](https://kframework.org) semantics of the SwapVM
+interpreter — the decode loop, and 20 of the 52 named opcodes — so that a *program*, not just
+an instruction, can carry a theorem. This is the part meant to be reusable: a builder
+composing a new strategy writes a claim about their bytes and discharges it with `kprove`.
+
+The second layer is what gives leverage, for one specific reason. **T0, the permission gate,
+is proved with the rest of the program left symbolic** — an unknown tail, not an enumeration
+of tails. It therefore already holds for programs nobody has written yet: put the gate first
+and the theorem comes with it, rather than being re-earned per strategy. `dustproof/` is a
+worked example of taking that leverage — a dust-sweeping product whose order program is
+composed by a builder that can emit only the one shape the theorems cover.
+
+### What this does *not* claim
+
+The value of a verification project is bounded by how honest it is about its edges, so those
+are stated rather than buried:
+
+- **20 of 52 opcodes are modelled.** Anything else falls through to a no-op in the model
+  while the real VM reverts. Where the two disagree, a theorem about the model says nothing
+  about production — `semantics/swapvm.md` documents each such gap.
+- **Layer-2 theorems are `ADMITTED`, not `PROVEN`**, because the instruction rules they rest
+  on are conformance-`TESTED` against the real VM rather than derived from it. `axioms.md`
+  carries the tiering.
+- **Every theorem ships with a negative control** — a deliberately false twin that must
+  fail. A proof that cannot fail proves nothing, and an inconsistent rule set proves
+  *everything* while looking like total success. The controls are the only check that
+  catches it, and `run-proofs.sh` exits non-zero if one ever passes.
+
+**Reproduce it:** `VERIFY.md` — four theorems and two negative controls in about 30 seconds.
+**Browse it:** <https://vovunku.github.io/swap-vm-verified/>
+
+---
+
 ## 📚 Table of Contents
 
 - [Overview](#overview)
