@@ -179,3 +179,176 @@ protect. Machine-checked: a scratch claim that a 4-byte-args `0x30` must revert
 `jumpifdirection-spec`/`-control` return 0/1 either way, so the pair's verdict is not evidence
 about this. `0x31`/`0x32` use `==Int` (tighter than `andBool`) and are unaffected; so are the
 parenthesised `==Bool` conditions in `swapvm.md`'s `0x53` rules.
+
+---
+
+# Re-audit after the merge from `origin/main` (commit `30ec9c7`, 33 files)
+
+Every one of the 33 files was run twice: **as committed**, and against a **scratch patched
+definition** with the 12 opcode modules wired into `lemmas.k` and `jumps.k:56,63`
+parenthesised. A third definition — **wired but *un*parenthesised** — isolates the rule defect
+from the wiring defect. All three were rebuilt from this tree; the previous audit's
+`/home/user/audit/sem-*` were not reused.
+
+## Verdict table
+
+| Definition | PROVED | not proved | fails to parse |
+|---|---|---|---|
+| **as committed** | **4** | 20 | **9** |
+| **patched** (wired + parenthesised) | **21** | 12 (all controls) | 0 |
+| **wired, still unparenthesised** | **21** | 12 (all controls) | 0 |
+
+* **Prove as committed (4):** `gate-spec`, `pricing-spec`, `pricing-exactout-spec`,
+  `control-sensitivity`. These four use only rules that live in `swapvm.md` itself (`0x23`,
+  `0x90`/`0x91`), so they are the only honest results in the tree. They do **not** prove for
+  the wrong reason.
+* **Fail to parse as committed (9):** `conformance-concrete`, `deadline-concrete`,
+  `gte-concrete`, `supplyshare-concrete`, `txorigin-concrete`, `whitelistcoequal-concrete`,
+  `whitelistsequential-concrete`, `txorigin-spec`, `txorigin-control`. The seven `*-concrete`
+  files name their opcode module in an `imports`; the two `txorigin` files reference
+  `#txOrigin()`. Neither exists in the compiled definition.
+* **Not proved as committed (20):** every remaining spec *and* every remaining control.
+
+## Findings 1–5, re-checked independently
+
+| # | Prior finding | Verdict |
+|---|---|---|
+| 1 | Opcode modules in no compiled definition | **SURVIVES** — `lemmas.k` is untouched by the merge |
+| 2 | `jumps.k:56,63` precedence defect (D-1/D-2) | **SURVIVES** — reproduced with the identical residual |
+| 3 | Five specs unprovably vacuous (`no-evaluators` premises) | **FIXED for four, reintroduced in a new place** |
+| 4 | `0x24` does not read the balance map | **FIXED** |
+| 5 | `salt-spec` proves with no Salt rule | **SURVIVES** — and now confirmed exactly |
+
+**F-1 — the wiring gap is untouched.** `semantics/lemmas.k` does not appear in the merge diff
+at all. It is still `requires "swapvm.md"` / `imports SWAPVM` with no opcode `requires` or
+`imports`, while all 12 opcode files carry a header instructing the integrator to add both. The
+merge added seven files that *depend* on those modules, so the wiring gap got worse, not better:
+before the merge the unwired modules produced silently-wrong proofs, now they also produce nine
+hard parse errors.
+
+`run-proofs.sh` runs **6 of the 33 files** — exactly the four that prove plus the two original
+controls. On the as-committed tree it kompiles cleanly, matches all six expectations, prints
+`all proofs match expectations`, and exits 0. **The harness is green on a tree where 29 of 33
+files are dead.**
+
+**F-2 — the rule defect is unchanged and still invisible to the suite.** `jumps.k` is not in
+the merge diff. A scratch claim that a 4-byte-args `0x30` must revert `UNMODELLED-ARGS-LENGTH`
+**fails** on the wired-but-unparenthesised definition with residual `<pc> 10`, `<status>
+Running` — the previous audit's result verbatim — and **proves** once the two pairs of
+parentheses are added.
+
+The important new result is the sensitivity measurement: the wired-but-defective definition and
+the wired-and-fixed definition give **byte-identical suite verdicts, 21 PROVED / 12 failed**.
+The methodological trap is not confined to the `jumpifdirection` pair — **no file in the suite
+detects this defect.** Adding the parentheses changes no reported verdict anywhere.
+
+Worse for the new harness: `krun` on the *defective* definition returns the *correct* answer
+(`Reverted("UNMODELLED-ARGS-LENGTH")`). The defect is a rule **overlap** — both the jump arm
+and the revert arm apply — and the LLVM backend silently picks one by priority while `kprove`'s
+all-path search sees both. **A concrete conformance harness structurally cannot catch D-1.**
+
+**F-4 — `0x24` is genuinely fixed.** `gte.k` now binds `<balances> B` and `<taker> TAKER` and
+branches on the real comparison `#balanceOf(B, TOK, TAKER) <Int MIN` / `>=Int MIN`. The
+previous audit's falsifying claim — balance 10^30, `minAmount = 1`, asserting
+`Reverted("TakerTokenBalanceIsLessThanRequired")` — now **fails**, with residual `<pc> 54`,
+`<status> Running`, i.e. the PASS arm correctly fires. `krun` witnesses both arms
+(balance 5 vs min 10 → revert; balance 10 vs min 10 → pass). This is a real repair.
+
+**F-3 — the tautology was moved, not eliminated.** `#balanceLtMin`, `#deadlineExceeded`,
+`#supplyShareSufficient`, `#coequalWhitelistContains` are gone; the rules now branch on real
+comparisons. The `no-evaluators` symbols that remain — `#blockTimestamp()`, `#txOrigin()`,
+`#totalSupply(_)` — are *environment* values, not the rule's branching predicate, and the specs
+pin them by premise (`requires #blockTimestamp() ==Int 100`). That is a legitimate shape: the
+premise fixes an opaque input, and the conclusion is about `<pc>`/`<status>`.
+
+But the vacuity reappeared as a **choice of constants**, which no amount of predicate cleanup
+catches:
+
+* **`whitelistcoequal-concrete.k` has no discriminating power at all.** Its jump target is
+  `Int2Bytes(2, 14, BE)` = 14 and its post-decode `<pc>` is `2 + 12` = 14. Scenario A
+  (taker in list, jump taken) and Scenario B (taker absent, fall through) therefore assert the
+  **same final state**, `<pc> 14, <status> Running`. Machine-checked: with **both `0x2c`
+  behavioural rules deleted** and the `[owise]` trace entry suppressed, the file still
+  **PROVES**. Scenario B's own comment says it "guards against an arm-selection bug where both
+  arms produce the same outcome" — that is precisely the bug it contains.
+* **`conformance-concrete.k` repeats it for `0x31` and `0x32`.** Jump target 24, post-decode
+  `2 + 22` = 24. The JumpIfTokenIn TAKEN and NOT-TAKEN claims and the JumpIfTokenOut TAKEN claim
+  all assert `<pc> 24`. Machine-checked: with the `0x31` and `0x32` rules **deleted**, all three
+  claims still **PROVE**. The `0x30` pair in the same file is well-formed (9 vs 5) — the flaw is
+  per-claim, not per-file.
+
+`deadline-concrete`, `gte-concrete`, `supplyshare-concrete`, `whitelistsequential-concrete` and
+`txorigin-concrete` do not have this flaw: each pairs a `Reverted(...)` arm against a `Running`
+arm, so the conclusions genuinely differ.
+
+**F-5 — confirmed exactly, and now isolated.** Against the as-committed definition, `salt-spec`,
+`stop-spec` and `jump-spec` all reach the claimed `<pc>`/`<status>` through the unknown-opcode
+`[owise]` no-op; the residual's only failing conjunct is the `ListItem(#unknown(...))` trace
+entry. Removing that one trace append from the `[owise]` rule and re-running: **`salt-spec`
+PROVES with no Salt rule in the definition** (`#Top`), while `stop-spec`, `jump-spec`,
+`revert-spec`, `extruction-spec`, `privateorder-spec`, `jumpifdirection-spec`,
+`jumpiftokenin-spec` and `jumpiftokenout-spec` all still fail. So the pathology is specific and
+proven: Salt's rule (`#exec(2, _) => .K`) is *behaviourally identical* to the unmodelled-opcode
+no-op, and `salt-spec` asserts nothing beyond it.
+
+## Did any control prove?
+
+**No.** All 12 controls failed under all three definitions. Every one failed after execution
+completed (`<k>` reduced to `.K`) on the conclusion, not on a stuck setup. No inconsistency.
+
+## Near-neighbour assessment
+
+The merge deleted 10 spec/control files (5 specs and their 5 controls) and added 7 concrete
+files, so **only 12 controls remain for 21 positive claims**; the five reworked opcodes
+(`0x20`, `0x24`, `0x25`, `0x2c`, `0x2d`) now have *no control at all* — their
+sensitivity argument rests entirely on the two-arm concrete pairs, which is why the
+whitelistcoequal and `0x31`/`0x32` constant collisions matter so much.
+
+Re-running the previous audit's test on the current file set: as committed, with every
+instruction rule absent, **11 of the 12 controls still fail** (the 12th, `txorigin-control`,
+does not parse). None of them discriminates. Under the patched definition the 12 do behave as
+near neighbours — they fail on the conclusion while their twins prove — so the controls are
+sound *once the definition is wired*. The defect is the definition, not the controls.
+
+## Non-vacuity
+
+Concrete `krun` witnesses on the patched LLVM backend reach the asserted state for
+`gate-spec` (`Reverted("TakerTokenBalanceIsZero")`), `gte-concrete` **both arms**,
+`jump-spec` (pc 4), `jumpifdirection-spec` (pc 5), `stop-spec` (pc 2), `salt-spec` (pc 7),
+and `whitelistcoequal-concrete` both arms — though the last is exactly the point: both
+witnesses land on `<pc> 14, Running`, so the witness confirms the claim is unfalsifiable
+rather than confirming the opcode works.
+
+**No witness is possible for `deadline-concrete`, `txorigin-concrete`,
+`whitelistsequential-concrete`, or `supplyshare-concrete`**: the LLVM interpreter aborts on the
+unevaluatable `#blockTimestamp()` / `#txOrigin()` / `#totalSupply(_)`. This is weaker than
+finding 3 was — the premises are now satisfiable *in principle* and the claims are not
+tautological — but there is still no executable witness, so their non-vacuity rests on
+`kprove` reaching a `Reverted(...)`/`Running` split that differs between arms. For those four
+that split is real, which is the best available evidence short of an environment model.
+
+## What the merge introduced that is new
+
+1. **Nine parse failures** where there were none — the seven `*-concrete` files plus
+   `txorigin-spec`/`-control` now name modules that the compiled definition does not contain.
+2. **`whitelistcoequal-concrete.k`**, whose two scenarios are indistinguishable, proven vacuous
+   by deleting the rules it claims to verify.
+3. **Three claims in `conformance-concrete.k`** (`0x31` ×2, `0x32`) with the same defect.
+4. **A shrunken control population** — 5 controls deleted, 0 added; five opcodes lost their
+   sensitivity twins, leaving 12 controls for 21 positive claims.
+5. **`txorigin`** gained `txorigin-concrete.k` but kept its `-spec`/`-control` pair, so it is
+   the one opcode carrying both styles; the brief's expectation that it was replaced is wrong.
+6. The genuine repair of `0x24` (F-4) and the removal of four tautological branching predicates
+   (F-3) — real progress, in the same merge.
+
+## Reproduction
+
+    # as committed
+    kompile --backend haskell lemmas.k --main-module SWAPVM-BYTES-LEMMAS \
+      --syntax-module SWAPVM-SYNTAX -o swapvm-haskell
+    for f in proofs/*.k; do kprove --definition swapvm-haskell "$f"; echo "$f $?"; done
+
+    # patched: add `requires "opcodes/<each>.k"` + `imports SWAPVM-<EACH>` to lemmas.k,
+    # and parenthesise jumps.k:56,63 as `andBool ( (…) ==Bool (…) )`, then re-run.
+
+Exit codes: `0` PROVED, `1` not proved, `113` failed to parse.
