@@ -74,19 +74,21 @@ module WHITELISTSEQUENTIAL-CONCRETE
   // low 80 bits (4660 mod 2^80 = 4660). With timestamp=10 and start=0, timeLeft=10. The
   // recursion unfolds once: address Bytes2Int(substrBytes(LIST, 2, 12), BE, Unsigned) ==Int
   // 4660 → #WL_JUMP (the JUMP rule fires before the duration check is consulted). The 0x2d
-  // JUMP arm overwrites <pc> with Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned) = 21. The
-  // loop then tries to decode at pc=21, hits the loop-exit rule (swapvm.md:100-105) since
-  // 21 >= lengthBytes(PGM)=21, and halts with status Running. Mirror of jump-spec.k's
-  // "jump lands past end" shape, the 0x23 PASS composition shape, and the 0x2c JUMP scenario
-  // in whitelistcoequal-concrete.k.
+  // JUMP arm overwrites <pc> with Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned) = 30. The
+  // loop then tries to decode at pc=30, hits the loop-exit rule (swapvm.md:100-105) since
+  // 30 >= lengthBytes(PGM)=21, and halts with status Running.
+  // DISCRIMINATION: jump target 30 != fall-through/revert pc 21. Scenario B reverts (status
+  // differs), but a mutant that deleted the JUMP arm and fell through would land scenario A at
+  // pc 21 Running — the SAME as a successful fall-through — so the target must differ from 21
+  // for scenario A to catch a deleted/sleeping JUMP arm.
   //
   // KEY FIDELITY POINT: this scenario exercises the Solidity rule that the address match is
   // checked BEFORE the duration check (Whitelist.sol:158-163). With timeLeft=10 < duration=
   // 1000, an INVERTED order would REVERT instead of JUMP. The proof of this claim establishes
   // that the K model preserves the Solidity order — a non-trivial property of the recursion.
   claim <k> #run => .K </k>
-        <program> b"\x2d\x13" +Bytes Int2Bytes(2, 21, BE) +Bytes Int2Bytes(5, 0, BE) +Bytes Int2Bytes(2, 1000, BE) +Bytes Int2Bytes(10, 4660, BE) </program>
-        <pc> 0 => 21 </pc>
+        <program> b"\x2d\x13" +Bytes Int2Bytes(2, 30, BE) +Bytes Int2Bytes(5, 0, BE) +Bytes Int2Bytes(2, 1000, BE) +Bytes Int2Bytes(10, 4660, BE) </program>
+        <pc> 0 => 30 </pc>
         <balanceIn> _ </balanceIn> <balanceOut> _ </balanceOut>
         <amountIn> _ </amountIn> <amountOut> _ </amountOut>
         <netPulled> _ </netPulled>
@@ -114,7 +116,7 @@ module WHITELISTSEQUENTIAL-CONCRETE
   // the source. A model that inverted the comparison or dropped the time arithmetic would
   // not select this arm.
   claim <k> #run => .K </k>
-        <program> b"\x2d\x13" +Bytes Int2Bytes(2, 21, BE) +Bytes Int2Bytes(5, 0, BE) +Bytes Int2Bytes(2, 1000, BE) +Bytes Int2Bytes(10, 9999, BE) </program>
+        <program> b"\x2d\x13" +Bytes Int2Bytes(2, 30, BE) +Bytes Int2Bytes(5, 0, BE) +Bytes Int2Bytes(2, 1000, BE) +Bytes Int2Bytes(10, 9999, BE) </program>
         <pc> 0 => 21 </pc>
         <balanceIn> _ </balanceIn> <balanceOut> _ </balanceOut>
         <amountIn> _ </amountIn> <amountOut> _ </amountOut>

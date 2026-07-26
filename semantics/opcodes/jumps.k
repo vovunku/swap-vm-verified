@@ -43,9 +43,20 @@ module SWAPVM-JUMPS
   //
   // The condition `(ARGS [ 0 ] =/=Int 0) ==Bool (TIN <Int TOUT)` branches on `==Bool` between
   // two Bool expressions; the inner `TIN <Int TOUT` is a comparison between two <query> cell
-  // variables, which the Haskell backend handles natively (per the task brief's note on
-  // cell-variable comparisons). The fall-through rule uses `=/=Bool` so the two arms are
-  // exhaustive and mutually exclusive for canonical-length ARGS.
+  // variables, which the Haskell backend handles natively. The fall-through rule uses
+  // `=/=Bool` so the two arms are exhaustive and mutually exclusive for canonical-length ARGS.
+  //
+  // D-1 HAZARD (axioms.md "DEFECT D-1"). `==Bool`/`=/=Bool` sit at the BOTTOM of K's Bool
+  // grammar, BELOW `andBool`. An unparenthesised comparison silently swallows the preceding
+  // `andBool` chain — here `lengthBytes(ARGS) ==Int 3 andBool (ARGS[0] =/=Int 0) ==Bool (...)`
+  // would parse as `(lengthBytes==3 andBool (ARGS[0]=/=0)) ==Bool (...)`, detaching the
+  // length guard from the UNMODELLED-ARGS-LENGTH arm and collapsing both direction arms'
+  // guards. This is exactly the defect that cost two wrong diagnoses in 0x53. The fix is to
+  // PARENTHESISE the comparison at every site — `andBool ( (ARGS[0] =/=Int 0) ==Bool (...) )`
+  // — NOT to add [priority]: priorities mask the next overlap rather than fix it (D-1
+  // postmortem). Verified: a claim that 4-byte-args 0x30 must revert
+  // UNMODELLED-ARGS-LENGTH fails unparenthesised (residual path condition
+  // `false ==Bool ...`) and proves once the parentheses are added.
 
   // Branch taken — overwrite <pc> with uint16 target read from ARGS[1:3].
   rule <k> #exec ( 48 , ARGS ) => .K ... </k>
@@ -53,14 +64,14 @@ module SWAPVM-JUMPS
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 3
-     andBool (ARGS [ 0 ] =/=Int 0) ==Bool (TIN <Int TOUT)
+     andBool ( (ARGS [ 0 ] =/=Int 0) ==Bool (TIN <Int TOUT) )
 
   // Branch not taken — no-op, <pc> keeps its decode-advanced value (=> .K with no <pc> write).
   rule <k> #exec ( 48 , ARGS ) => .K ... </k>
        <tokenIn> TIN </tokenIn> <tokenOut> TOUT </tokenOut>
        <status> Running </status>
     requires lengthBytes(ARGS) ==Int 3
-     andBool (ARGS [ 0 ] =/=Int 0) =/=Bool (TIN <Int TOUT)
+     andBool ( (ARGS [ 0 ] =/=Int 0) =/=Bool (TIN <Int TOUT) )
 
   // Non-canonical args: Solidity pads/truncates without reverting, a soundness hazard
   // (swapvm.md:301-324). Revert loudly. Mirrors opcodes/jump.k and swapvm.md:319-324.

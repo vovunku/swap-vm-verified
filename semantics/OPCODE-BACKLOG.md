@@ -1,8 +1,8 @@
 # Opcode semantics backlog
 
 Authoritative list of SwapVM opcodes **dispatched in production** (`src/opcodes/Opcodes.sol`)
-but **not yet modelled** in the K semantics (`semantics/swapvm.md`). 47 opcodes are wired to
-handlers; 3 are modelled (`0x23`, `0x53`, `0x90`); the other 44 are below.
+but **not yet modelled** in the K semantics. 47 opcodes are wired to handlers; 20 have K
+rules (16 conformance-verified, 4 modelled); the other 26 are below.
 
 Unmodelled opcodes currently fall through to the `[owise]` no-op (`swapvm.md:349-351`) which
 records `#unknown(OP, ARGS)` in the trace. Production reverts `UnknownOpcode`
@@ -12,10 +12,25 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 
 ## Status legend
 
-- **modelled** — has K rules (in `swapvm.md` for the original 3; in `semantics/opcodes/<name>.k` as a sibling module for the rest)
-- **conformance-verified** — modelled AND has concrete K claims + Solidity tests showing K↔production agreement (the real verification; see `test/conformance/InstructionConformance.t.sol` and `semantics/proofs/*-concrete.k`)
+- **modelled** — has K rules (in `swapvm.md` for the original 3; in `semantics/opcodes/<name>.k`
+  as a sibling module for the rest) AND those rules are exercised by `kprove` via
+  `run-proofs.sh`, which builds the aggregated `_lemmas-all.k` (every sibling module wired in).
+- **conformance-verified** — modelled AND has BOTH a passing K claim (`semantics/proofs/*-concrete.k`
+  or `*-spec.k`, run by `run-proofs.sh`) AND a matching Solidity test
+  (`test/conformance/InstructionConformance.t.sol`) showing K↔production agreement on the SAME
+  bytes. The real verification. NB: concrete claims catch wrong *values* but are blind to rule
+  *overlap* (review Addendum 2); only the all-path symbolic specs (`gate-spec`, `pricing-spec`)
+  separate those, so "conformance-verified" is not absolute.
 - **in-progress** — a subagent owns it
 - **unmodelled** — not started
+
+The label was previously applied inversely (review §6): three two-engine-tested opcodes
+(`0x23`/`0x53`/`0x90`, axioms.md `TESTED`) were marked plain `modelled` while the K half of the
+`conformance-verified` set had never run. Fixed: `run-proofs.sh` now builds `_lemmas-all.k` so
+the K half runs for every modelled opcode, the non-discriminating jump targets were corrected
+(taken ≠ fall-through), and `0x23`/`0x53`/`0x90` are upgraded to `conformance-verified`.
+`0x42`/`0x50` remain `modelled`: K claims pass but no Solidity mirror exists yet (axioms.md
+`ADMITTED`).
 
 ## 0x00–0x0f · Core control flow
 
@@ -32,7 +47,7 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 | Hex | Opcode | Handler | Source | Status |
 |-----|--------|---------|--------|--------|
 | `0x20` | Deadline | `Controls._deadline` | `Controls.sol:131-134` | conformance-verified |
-| `0x23` | OnlyTakerTokenBalanceNonZero | `Controls._onlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | **modelled** |
+| `0x23` | OnlyTakerTokenBalanceNonZero | `Controls._onlyTakerTokenBalanceNonZero` | `Controls.sol:140-144` | conformance-verified |
 | `0x24` | OnlyTakerTokenBalanceGte | `Controls._onlyTakerTokenBalanceGte` | `Controls.sol:161-166` | conformance-verified |
 | `0x25` | OnlyTakerTokenSupplyShareGte | `Controls._onlyTakerTokenSupplyShareGte` | `Controls.sol:171-178` | conformance-verified |
 | `0x26` | OnlyTxOriginTokenBalanceNonZero | `Controls._onlyTxOriginTokenBalanceNonZero` | `Controls.sol:152-156` | conformance-verified |
@@ -58,7 +73,7 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 |-----|--------|---------|--------|--------|
 | `0x50` | XYCSwap | `XYCSwap._xycSwapXD` | `instructions/XYCSwap.sol` | modelled |
 | `0x51` | XYCConcentrateSwap | `XYCConcentrate._xycConcentrateGrowLiquidity2D` | `instructions/XYCConcentrate.sol` | unmodelled |
-| `0x53` | LimitSwap | `LimitSwap._limitSwap1D` | `instructions/LimitSwap.sol` | **modelled** |
+| `0x53` | LimitSwap | `LimitSwap._limitSwap1D` | `instructions/LimitSwap.sol` | conformance-verified |
 | `0x54` | LimitSwapFullAmount | `LimitSwap._limitSwapOnlyFull1D` | `instructions/LimitSwap.sol` | unmodelled |
 | `0x58` | PeggedSwap | `PeggedSwap._peggedSwapGrowPriceRange2D` | `instructions/PeggedSwap.sol` | unmodelled |
 
@@ -81,7 +96,7 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 
 | Hex | Opcode | Handler | Source | Status |
 |-----|--------|---------|--------|--------|
-| `0x90` | StaticBalances | `Balances._staticBalancesXD` | `instructions/Balances.sol:37-47` | **modelled** |
+| `0x90` | StaticBalances | `Balances._staticBalancesXD` | `instructions/Balances.sol:37-47` | conformance-verified |
 | `0x91` | DynamicBalances | `Balances._dynamicBalancesXD` | `instructions/Balances.sol` | unmodelled |
 | `0x94` | DutchAuctionBalanceIn | `DutchAuction._dutchAuctionBalanceIn1D` | `instructions/DutchAuction.sol` | unmodelled |
 | `0x95` | DutchAuctionBalanceOut | `DutchAuction._dutchAuctionBalanceOut1D` | `instructions/DutchAuction.sol` | unmodelled |
@@ -107,5 +122,5 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 
 ## Count
 
-- 20 modelled (3 in `swapvm.md` + 17 in `semantics/opcodes/`), 26 unmodelled-but-dispatched = 46 dispatched total, ~164 reserved.
-- When a subagent lands an opcode, flip its row to **modelled**. The core control flow family's rules live in sibling modules (`SWAPVM-STOP`, `SWAPVM-REVERT`, `SWAPVM-SALT`, `SWAPVM-JUMP`, `SWAPVM-EXTRUCTION`) that must be wired into `lemmas.k` via `requires` + `imports`; see `opcodes/README.md` (TODO) or each opcode's `.md` for the recipe.
+- 20 with K rules (3 in `swapvm.md` + 17 in `semantics/opcodes/`), of which 16 are conformance-verified (K claim + Solidity test agree) and 4 are `modelled` (K-only: `0x00` Stop deferred on a pc gap, `0x04` Extruction, `0x42` InvalidateTokenOut, `0x50` XYCSwap). 26 unmodelled-but-dispatched = 46 dispatched total, ~164 reserved.
+- When a subagent lands an opcode, flip its row to **modelled**. The sibling modules (`SWAPVM-STOP`, `SWAPVM-REVERT`, …) are wired into `_lemmas-all.k` via `requires` + `imports` (NOT `lemmas.k`, which imports only the 3 base opcodes); `run-proofs.sh` builds `_lemmas-all.k` so every opcode's K claims run. See each opcode's `.md` "Integration".

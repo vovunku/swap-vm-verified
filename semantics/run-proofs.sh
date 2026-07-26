@@ -38,21 +38,58 @@ command -v kprove  >/dev/null 2>&1 || { echo "kprove not on PATH — run 'nix de
 PROVE_TIMEOUT=${PROVE_TIMEOUT:-1800}
 
 echo "== building swapvm-haskell (proofs use this definition) =="
+# _lemmas-all.k (not lemmas.k) is the aggregated definition: it `requires`/`imports` every
+# sibling opcode module, so the 16 proof files that `imports SWAPVM-<OPCODE>` parse and the
+# opcode rules are actually in the definition. lemmas.k imports only SWAPVM (the 3 base
+# opcodes in swapvm.md + bytes lemmas), so building it leaves every new opcode falling
+# through to the [owise] unknown-opcode no-op and 9 spec files failing to parse on undeclared
+# symbols. Output dir stays `swapvm-haskell` (gitignored, matches proofs/README.md docs).
 kompile --backend haskell _lemmas-all.k \
   --main-module SWAPVM-BYTES-LEMMAS --syntax-module SWAPVM-SYNTAX \
   -o swapvm-haskell >/tmp/swapvm-kompile-haskell.log 2>&1 \
   || { echo "haskell kompile FAILED — see /tmp/swapvm-kompile-haskell.log"; exit 2; }
 
 # name | expect (prove | fail)
-#   prove : kprove must exit 0 (#Top)
-#   fail  : kprove must NOT exit 0 — the negative controls (proofs/README.md:7-13)
+#   prove : kprove must exit 0 (#Top)  — every *-spec.k and *-concrete.k
+#   fail  : kprove must NOT exit 0 — the negative controls (proofs/README.md)
+# The original six are the program-level theorems (T0/T1/T2 + their controls). The rest are
+# per-opcode conformance: a *-spec/*-concrete (must prove) paired with a *-control (must fail)
+# per proofs/README.md §"Why the controls exist" — a control that cannot fail proves nothing.
 SPECS=(
+  # --- program-level theorems (Phase 1) ---
   'gate-spec|prove'                # T0 — gate reverts on zero balance, any symbolic tail
   'pricing-spec|prove'             # T1 — exact-in is exactly the floor
   'pricing-exactout-spec|prove'    # T2 — exact-out is exactly the ceiling
   'control-sensitivity|prove'      # negative-control's twin: same premises, correct conclusion
   'negative-control|fail'          # balance non-zero, asserting the same revert — must fail
   'pricing-negative-control|fail'  # maker-safety inequality reversed — must fail
+  # --- per-opcode spec/control pairs ---
+  'salt-spec|prove'                'salt-control|fail'
+  'stop-spec|prove'                'stop-control|fail'
+  'revert-spec|prove'              'revert-control|fail'
+  'jump-spec|prove'                'jump-control|fail'
+  'extruction-spec|prove'          'extruction-control|fail'
+  'jumpifdirection-spec|prove'     'jumpifdirection-control|fail'
+  'jumpiftokenin-spec|prove'       'jumpiftokenin-control|fail'
+  'jumpiftokenout-spec|prove'      'jumpiftokenout-control|fail'
+  'privateorder-spec|prove'        'privateorder-control|fail'
+  'txorigin-spec|prove'            'txorigin-control|fail'
+  # --- restored must-fail controls for the opcodes reworked to concrete form (review §7) ---
+  'deadline-control|fail'          # 0x20 — ts>dl asserts Running (must fail)
+  'gte-control|fail'               # 0x24 — balance<min asserts Running (must fail)
+  'supplyshare-control|fail'       # 0x25 — totalSupply==0 asserts Running (must fail)
+  'whitelistcoequal-control|fail'  # 0x2c — match asserts no-jump pc (must fail)
+  'whitelistsequential-control|fail' # 0x2d — match asserts no-jump pc (must fail)
+  # --- per-opcode concrete conformance (no symbolic arm-selection issue; all prove) ---
+  'conformance-concrete|prove'     # Salt/Revert/Jump/JumpIfX/PrivateOrder
+  'deadline-concrete|prove'
+  'gte-concrete|prove'
+  'supplyshare-concrete|prove'
+  'txorigin-concrete|prove'
+  'whitelistcoequal-concrete|prove'
+  'whitelistsequential-concrete|prove'
+  'invalidatetokenout-concrete|prove'
+  'xycswap-concrete|prove'
 )
 
 echo

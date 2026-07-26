@@ -101,13 +101,17 @@ requires "../swapvm.md"
 // of scope, not contradicted. Stated plainly: a theorem over this rule is a theorem about
 // swap execution, not quote execution.
 //
-// ARITHMETIC OVERFLOW. `prefilled + amountOut` is Solidity 0.8 checked `uint256` addition:
-// it reverts `Panic(0x11)` on wraparound. The model uses unbounded `+Int`, so the sum never
-// wraps and the overfill arm (`> balanceOut`) fires instead with a different reason. This
-// only diverges when `prefilled + amountOut >= 2^256`, which requires both operands near the
-// uint256 ceiling — unreachable for any real token balance (balanceOut is itself a uint256
-// and the require bounds newFilled to it). Both engines revert in that region; only the
-// reason differs. Recorded here as a known limitation, not modelled.
+// ARITHMETIC OVERFLOW — REACHABLE, reason diverges. `prefilled + amountOut` is Solidity 0.8
+// checked `uint256` addition: it reverts `Panic(0x11)` on wraparound. The model uses
+// unbounded `+Int`, so the sum never wraps and the overfill arm (`> balanceOut`) fires
+// instead with reason "InvalidatorsTokenOutExceeded". This is NOT unreachable: the public
+// `invalidateTokenOut(orderHash, tokenOut)` (Invalidators.sol:72-76) — the standard order-
+// cancellation path — sets the counter to `type(uint256).max`. After a cancel, every
+// subsequent `_invalidateTokenOut1D` with `amountOut > 0` hits the checked add at :130 and
+// reverts `Panic(0x11)`; the model reverts `InvalidatorsTokenOutExceeded`. BOTH revert, so
+// this is not permissive (the soundness direction is correct), but it is an ordinary,
+// reachable path where the model's REVERT REASON is wrong, and any theorem stated about the
+// reason on this path is wrong too. Recorded here as a known limitation, not modelled.
 
 module SWAPVM-INVALIDATETOKENOUT
   imports SWAPVM

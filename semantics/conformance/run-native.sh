@@ -55,7 +55,11 @@ CASES=(
   'loneOpcode;b"\x53";2;Reverted;.Map'
   'argsOverrun;b"\x53\x40";66;Reverted;.Map'
   'empty;b"";0;Running;.Map'
-  'zeroArg;b"\x50\x00";2;Running;.Map'
+  # NOTE: 'zeroArg' for 0x50 was removed. While 0x50 (XYCSwap) was unmodelled, b"\x50\x00"
+  # was a no-op reaching pc 2 Running. Now that XYCSwap is modelled, that program on default
+  # zero balances reverts "XYCSwapRequiresBothBalancesNonZero" — so the old expectation was a
+  # latent red. The 'loneOpcode' case above already covers the "single opcode, pc, status"
+  # shape via 0x53 (LimitSwap), so 0x50 adds no case not already covered.
 )
 
 echo "== K side (krun in $SEM_DIR) =="

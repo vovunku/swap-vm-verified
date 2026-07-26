@@ -118,6 +118,17 @@ requires "../swapvm.md"
 // The trade is asymmetric and correct: concrete conformance is REAL verification, the
 // tautological symbolic claim was not. Should the K backend grow the missing SMT
 // propagation, the symbolic universal claim can be reinstated on top of the direct form.
+//
+// ARITHMETIC OVERFLOW — NOT MODELLED (same class as T1 / LimitSwap, axioms.md).
+// `Controls.sol:171-178` has NO `unchecked` block, so under Solidity 0.8.30 both
+// `balance * 1e18` and `minShareE18 * totalSupply` are checked multiplications that revert
+// `Panic(0x11)` on wraparound. The model uses arbitrary-precision `*Int`
+// (supplyshare.k:154,176), so it COMPUTES where the chain reverts — the PERMISSIVE
+// direction. Distinguishing input: `balanceOf(taker) = 2^200`, `totalSupply = 1`,
+// `minShareE18 = 0` → Solidity reverts (`2^200 * 1e18 ≈ 1.6e78 > 2^256`); the K PASS arm
+// fires → `<status> Running`. This is exactly the caveat that travels with T1 in axioms.md
+// ("K and the EVM differ iff amountIn * balanceOut >= 2^256"). Read the theorems as "given
+// the products do not overflow". Recorded here as a known limitation, not modelled.
 
 module SWAPVM-SUPPLYSHARE
   imports SWAPVM

@@ -335,17 +335,43 @@ The Solidity constrains nothing about `args.length`. `args.slice(2)` (0x2c) and 
 (0x2d) silently produce whatever the bytes happen to be; the integer division `list.length / 10`
 (or `/ 12`) silently ignores a trailing partial entry. The hazards:
 
-- **A SHORT args** reads a DIFFERENT list than the maker encoded (right-zero-padded by
-  Solidity's calldata semantics). On 0x2d this can also desynchronise the start-vs-timestamp
-  comparison (`parseWhitelistSequentialStartPC` reads the start bytes at a wrong offset).
 - **An OFF-PITCH args** (e.g. 13 bytes for 0x2c, which `length / 10` truncates to one 10-byte
   entry plus 3 ignored bytes) reads a list whose trailing partial is silently dropped. The
-  maker's encoded whitelist is silently smaller than they intended.
+  maker's encoded whitelist is silently smaller than they intended. Does NOT revert on chain.
+- **A SUB-HEADER args (GAS TRAP).** This is NOT "right-zero-padded" (an earlier version of
+  this doc said so; corrected). `Whitelist.sol` uses an unchecked `Calldata.slice` overload
+  whose length derives from `args.length` with no floor: for args shorter than the fixed
+  header, the slice length underflows and the loop strides backward through ~2^255 empty
+  iterations, consuming the taker's whole gas budget — the contract does NOT terminate and
+  does NOT revert with a named error. Boundaries reproduced in
+  `test/kontrol/analysis/repro/WhitelistGasTrapRepro.t.sol`: 0x2c traps at `args.length <= 1`,
+  0x2d at `<= 6`; everything at or above the header terminates (including off-pitch lengths).
+  The backward scan can additionally produce a SPURIOUS whitelist match and jump to
+  `args[0:2]` (WhitelistGasTrapRepro.t.sol:247-253). This is a CONTRACT BUG. The model's
+  `UNMODELLED-ARGS-LENGTH` revert for sub-header lengths is therefore CONSERVATIVE — a proof
+  fails rather than succeeding on a fiction — but it does not match the chain's out-of-gas;
+  the K rules never reproduce a divergent loop, and the recursive `#coequalContains` /
+  `#seqOutcome` terminate unconditionally (strictly shrinking, invoked only under a
+  pitch-multiple guard).
 
-Neither case reverts on chain. If the model only handled the canonical case and let the rest
-fall through to the `[owise]` no-op (swapvm.md:349-351), every such Whitelist would be
-SILENTLY DELETED from the model while staying live in production — the worst failure direction
-(sound but wrong), the same hazard `swapvm.md:301-324` documents for opcodes `0x23`/`0x90`.
+If the model only handled the canonical case and let the rest fall through to the `[owise]`
+no-op (swapvm.md:349-351), every such Whitelist would be SILENTLY DELETED from the model while
+staying live in production — the worst failure direction (sound but wrong), the same hazard
+`swapvm.md:301-324` documents for opcodes `0x23`/`0x90`.
+
+## 0x2d guard-order divergence (reason only)
+
+The K rules check `lengthBytes(ARGS)` first and revert `UNMODELLED-ARGS-LENGTH` for a
+non-canonical length. Solidity (`Whitelist.sol:141-166`) has NO args-length check: it reads
+`(start, pc)` from `args[0:7]` (:143), then — inside the `unchecked` block — checks
+`if (timeLeft < start) revert WhitelistAllowedTimeViolation()` (:147) BEFORE the list slice
+`args.slice(7)` at :150. So on the intersection — a non-canonical `args.length` AND
+`timeLeft < start` — both engines revert but with DIFFERENT reasons: Solidity gives
+`WhitelistAllowedTimeViolation`, K gives `UNMODELLED-ARGS-LENGTH`. Distinguishing input:
+`argsLen = 2` (below the 7-byte header) with a `start` read past `block.timestamp`. Both
+revert; only the reason differs — the same class as the `pc 88 vs 91` drift already
+documented in `swapvm.md:107-116`. A theorem phrased over "reverts" holds; one phrased over
+the reason on this intersection is wrong.
 
 The structural length constraints admit exactly the args lengths whose payload is a whole
 number of packed entries after the fixed header:
