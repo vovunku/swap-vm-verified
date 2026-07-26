@@ -243,9 +243,9 @@ function renderNav(){
       <div class="d">${e.length} bytes · ${e.steps.length} instruction${e.steps.length===1?'':'s'}</div>
     </div>`;
   }).join('') : '';
-  document.getElementById('nav').innerHTML =
-    group('Start here', cur8.filter(e => e.kind==='good'||e.kind==='bad')) +
-    group('Conformance examples', cur8.filter(e => e.kind==='conformance'));
+  // Only the programs that carry a machine-checked claim. The conformance examples are
+  // still exercised by selftest.py; they are not listed here. See server.catalogue().
+  document.getElementById('nav').innerHTML = group('Verified programs', cur8);
   document.querySelectorAll('.item').forEach(el =>
     el.onclick = () => { cur = +el.dataset.i; render(); });
 }
