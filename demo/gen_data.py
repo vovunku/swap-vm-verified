@@ -111,7 +111,12 @@ def theorems() -> list:
     out = []
     for f in sorted((ROOT / 'semantics/proofs').glob('*.k')):
         name = f.stem
-        is_control = 'control' in name
+        # Classify on the SUFFIX, not on the substring. `control-sensitivity.k` contains
+        # "control" but is a spec that must PROVE — it is the twin that shows kprove is
+        # discriminating on the conclusion rather than choking on the premises. Reporting it
+        # as expected-to-fail would invert the one check that catches an inconsistent rule
+        # set, which is the worst failure this suite has.
+        is_control = name.endswith('-control')
         out.append({'file': f'semantics/proofs/{f.name}', 'name': name,
                     'expected': 'FAIL' if is_control else '#Top',
                     'kind': 'negative control' if is_control else 'theorem'})

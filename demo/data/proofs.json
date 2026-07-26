@@ -2,8 +2,8 @@
   {
     "file": "semantics/proofs/control-sensitivity.k",
     "name": "control-sensitivity",
-    "expected": "FAIL",
-    "kind": "negative control"
+    "expected": "#Top",
+    "kind": "theorem"
   },
   {
     "file": "semantics/proofs/deadline-control.k",
