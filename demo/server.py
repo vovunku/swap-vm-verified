@@ -584,8 +584,8 @@ PROOF_PAIRS = {
     'catalogue':   ('pricing-spec', 'pricing-negative-control'),
     'gateRejects': ('gate-spec', 'negative-control'),
 }
-K_WORKSPACE = os.environ.get('DEMO_K_WS', '/home/user/sem2')
-K_DEFINITION = os.environ.get('DEMO_K_DEF', 'swapvm-full')
+K_WORKSPACE = os.environ.get('DEMO_K_WS', '/home/user/sem2/semantics')
+K_DEFINITION = os.environ.get('DEMO_K_DEF', 'swapvm-haskell')
 
 EXEC_WORKSPACE = os.environ.get('DEMO_EXEC_WS', '/home/user/fee-work')
 EXEC_CONTAINER = os.environ.get('DEMO_EXEC_CONTAINER', 'kontrol')
@@ -647,6 +647,18 @@ def _kprove(spec: str) -> dict:
     except Exception as e:
         return {'spec': spec, 'available': False, 'error': str(e)}
     out = (r.stdout or '') + (r.stderr or '')
+
+    # kprove EXITS 0 WHEN THE DEFINITION IS MISSING. It prints "[Error] Critical: Does not
+    # exist" and returns success, so neither the exit code nor the absence of #Top
+    # distinguishes "this claim was refuted" from "there was nothing to prove against".
+    # That matters most for the CONTROLS, whose pass criterion is a NON-zero exit: a broken
+    # path would make every control look like it PROVED, i.e. like an inconsistent rule set.
+    # So a missing definition is reported as unavailable, never as a verdict.
+    if 'Does not exist or not a directory' in out or 'Could not find' in out:
+        return {'spec': spec, 'available': False,
+                'error': f'the K definition {K_DEFINITION!r} was not found in {K_WORKSPACE} '
+                         f'-- kprove exits 0 in this case, so this is reported as unavailable '
+                         f'rather than as a failed proof'}
     return {'spec': spec, 'available': True, 'exit': r.returncode,
             'top': '#Top' in out, 'seconds': round(time.time() - t0, 1),
             'stuck': 'WarnStuckClaimState' in out}
