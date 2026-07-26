@@ -66,6 +66,26 @@ BLOCKS = [
                   'default': '2000000000000000000000'}],
     },
     {
+        'op': '20', 'name': 'Deadline', 'label': 'Deadline',
+        'blurb': 'Reverts once block.timestamp passes the 5-byte deadline. Modelled in K with a spec and a control.',
+        'source': 'src/instructions/Controls.sol · semantics/opcodes/deadline.k',
+        'args': [{'key': 'deadline', 'label': 'Expiry (unix seconds)', 'size': 5, 'type': 'uint',
+                  'default': '1099511627775'}],
+    },
+    {
+        'op': '50', 'name': 'XYCSwap', 'label': 'Constant-product swap',
+        'blurb': ('amountOut = floor(amountIn x balanceOut / (balanceIn + amountIn)). In Aqua mode the '
+                  'reserves come from Aqua, not from a balances instruction.'),
+        'source': 'src/instructions/XYCSwap.sol · semantics/opcodes/xycswap.k',
+        'args': [],
+    },
+    {
+        'op': '02', 'name': 'Salt', 'label': 'Salt (order uniqueness)',
+        'blurb': 'Touches no register. Distinguishes otherwise-identical orders.',
+        'source': 'src/instructions/Controls.sol · semantics/opcodes/salt.k',
+        'args': [{'key': 'salt', 'label': 'Nonce', 'size': 8, 'type': 'uint', 'default': '1'}],
+    },
+    {
         'op': '53', 'name': 'LimitSwap', 'label': 'Fixed-rate limit swap',
         'blurb': ('Prices at the fixed ratio balanceOut:balanceIn. Exact-in floors, exact-out ceilings — '
                   'both round toward the maker.'),
@@ -161,6 +181,8 @@ def curated() -> list:
     the program still runs, still prices, and T0 no longer holds.
     """
     good, _ = assemble([{'op': o, 'args': {}} for o in ('23', '90', '53')])
+    dust, _ = assemble([{'op': '23', 'args': {}}, {'op': '20', 'args': {}},
+                        {'op': '50', 'args': {}}, {'op': '02', 'args': {}}])
     bad = '2313' + good[4:4 + 38] + good[4 + 40:]        # gate argsLen 0x13, not 0x14
     return [
         {'label': '__good', 'title': 'Permissioned swap — verified', 'kind': 'good',
@@ -175,6 +197,12 @@ def curated() -> list:
                   'than rejected. The gate theorem stops applying. This defect class is recorded in '
                   'commit 129aa48.'),
          'expect': {'pc': 90, 'status': 'Running', 'amountOut': None}},
+        {'label': '__dust', 'title': 'DustProof — an Aqua dust order', 'kind': 'good',
+         'bytes': dust, 'length': len(dust) // 2,
+         'note': ('Buys a dust token for WETH through Aqua. Gate, expiry, constant-product curve, '
+                  'nonce. Both theorems apply: T0 (the gate, over any tail) and D1 (the quote is '
+                  'exactly the curve, for any reserves and any trade size).'),
+         'expect': {'pc': 41, 'status': 'Running', 'amountOut': None}},
     ]
 
 
@@ -268,6 +296,14 @@ def proved(steps: list) -> list:
                                     'first, so the theorem says nothing about this arrangement.')})
 
     shape = [(s['op'], s['argsLen']) for s in live]
+
+    if shape == [('23', 20), ('20', 5), ('50', 0), ('02', 8)]:
+        t = T['D1']
+        results.append({**t, 'holds': True,
+                        'because': ('This is exactly the program DustOrderBuilder emits, and D1 was '
+                                    'proved about it with the maker reserves and the trade size left '
+                                    'symbolic.')})
+
     if shape == [('23', 20), ('90', 64), ('53', 1)]:
         for tid in ('T1', 'T2'):
             results.append({**T[tid], 'holds': True,
@@ -288,6 +324,18 @@ SELECTORS = {
     '4b9d78b6': 'LimitSwapDirectionMismatch',
     '9d4e2b04': 'LimitSwapRecomputeDetected',
 }
+
+# Spec/control PAIRS. Verify runs both: the spec must return #Top, the control MUST FAIL.
+# Running only the spec would be worth much less — a proof that cannot fail proves nothing,
+# and an inconsistent rule set proves everything while looking like total success.
+PROOF_PAIRS = {
+    '__dust':      ('dustproof-spec', 'dustproof-control'),
+    '__good':      ('pricing-spec', 'pricing-negative-control'),
+    'catalogue':   ('pricing-spec', 'pricing-negative-control'),
+    'gateRejects': ('gate-spec', 'negative-control'),
+}
+K_WORKSPACE = os.environ.get('DEMO_K_WS', '/home/user/sem2')
+K_DEFINITION = os.environ.get('DEMO_K_DEF', 'swapvm-full')
 
 EXEC_WORKSPACE = os.environ.get('DEMO_EXEC_WS', '/home/user/fee-work')
 EXEC_CONTAINER = os.environ.get('DEMO_EXEC_CONTAINER', 'kontrol')
@@ -337,6 +385,47 @@ def execute(hexstr: str, cfg: dict) -> dict:
     return res
 
 
+def _kprove(spec: str) -> dict:
+    """Run kprove on one spec. Deterministic: same definition, same file, same verdict."""
+    cmd = ['docker', 'exec', '-u', 'user', EXEC_CONTAINER, 'bash', '-c',
+           f'cd {K_WORKSPACE} && PATH=/usr/bin:/bin timeout 600 '
+           f'kprove --definition {K_DEFINITION} proofs/{spec}.k']
+    import time
+    t0 = time.time()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=660)
+    except Exception as e:
+        return {'spec': spec, 'available': False, 'error': str(e)}
+    out = (r.stdout or '') + (r.stderr or '')
+    return {'spec': spec, 'available': True, 'exit': r.returncode,
+            'top': '#Top' in out, 'seconds': round(time.time() - t0, 1),
+            'stuck': 'WarnStuckClaimState' in out}
+
+
+def prove(label: str) -> dict:
+    """Run the spec/control pair for an example. No pattern matching, no agent — this
+    executes the prover and reports what it returned."""
+    pair = PROOF_PAIRS.get(label)
+    if not pair:
+        return {'available': False,
+                'error': f'no spec is paired with {label!r}. Verification here runs a '
+                         'human-written spec; it does not generate one.'}
+    spec_name, control_name = pair
+    spec, control = _kprove(spec_name), _kprove(control_name)
+    if not (spec.get('available') and control.get('available')):
+        return {'available': False, 'error': spec.get('error') or control.get('error')}
+
+    ok = spec['top'] and control['exit'] != 0
+    return {
+        'available': True, 'ok': ok,
+        'spec': {**spec, 'expected': '#Top',
+                 'verdict': 'PROVED' if spec['top'] else 'DID NOT PROVE'},
+        'control': {**control, 'expected': 'must FAIL',
+                    'verdict': 'failed as required' if control['exit'] != 0
+                               else 'PROVED — the rule set is INCONSISTENT and every result is void'},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload, ctype='application/json'):
         body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -360,6 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                     else EXAMPLE_NOTES.get(e['label'], (e['label'], ''))
                 blocks, unsupported = disassemble(e['bytes'])
                 examples.append({**e, 'title': title, 'note': note,
+                                 'provable': e['label'] in PROOF_PAIRS,
                                  'blocks': blocks, 'unsupported': unsupported,
                                  'editable': not unsupported})
             return self._send(200, {'blocks': BLOCKS, 'opcodes': OPCODES,
@@ -380,6 +470,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/disassemble':
             blocks, unsupported = disassemble(req.get('hex', ''))
             return self._send(200, {'blocks': blocks, 'unsupported': unsupported})
+        if self.path == '/api/prove':
+            return self._send(200, prove(req.get('label', '')))
         if self.path == '/api/execute':
             hexstr = req.get('hex') or assemble(req.get('blocks', []))[0]
             return self._send(200, execute(hexstr, req.get('config', {})))

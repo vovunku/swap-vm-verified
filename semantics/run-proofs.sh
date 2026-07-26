@@ -38,7 +38,7 @@ command -v kprove  >/dev/null 2>&1 || { echo "kprove not on PATH — run 'nix de
 PROVE_TIMEOUT=${PROVE_TIMEOUT:-1800}
 
 echo "== building swapvm-haskell (proofs use this definition) =="
-kompile --backend haskell lemmas.k \
+kompile --backend haskell _lemmas-all.k \
   --main-module SWAPVM-BYTES-LEMMAS --syntax-module SWAPVM-SYNTAX \
   -o swapvm-haskell >/tmp/swapvm-kompile-haskell.log 2>&1 \
   || { echo "haskell kompile FAILED — see /tmp/swapvm-kompile-haskell.log"; exit 2; }

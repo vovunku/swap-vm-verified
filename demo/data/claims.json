@@ -35,6 +35,19 @@
       "assumptions": [
         "Same overflow caveat as T1."
       ]
+    },
+    {
+      "id": "D1",
+      "file": "../dustproof/semantics/dustproof-spec.k",
+      "verdict": "PROVED",
+      "applies_when": "gate + Deadline + XYCSwap + Salt (the DustProof order)",
+      "plain": "The taker receives exactly the constant-product price, rounded down to the wei \u2014 for any maker reserves and any trade size.",
+      "why_it_is_strong": "Proved with both Aqua-supplied reserves and the trade size left as unknowns, so it covers every pool and every order size at once. Two-sided: one bound alone would be satisfied by quoting zero.",
+      "assumptions": [
+        "The order parameters \u2014 gate token, deadline, salt \u2014 are fixed in the proved program. Reserves and trade size are not.",
+        "block.timestamp is pinned by equality, not an inequality: the backend will not refute the opposite branch from an inequality premise (semantics/opcodes/deadline.md:125-156).",
+        "Aqua supplies the reserves; there is no StaticBalances instruction, and the maker's committed balance is what bounds total payout."
+      ]
     }
   ],
   "negative_controls": [
@@ -44,19 +57,41 @@
       "plain": "A deliberately FALSE claim, asserted so it must fail. If it ever succeeded, the rule set would be self-contradictory and every result above would be worthless. An inconsistent theory proves everything and looks exactly like total success \u2014 this is the only check that catches it."
     },
     {
+      "file": "../dustproof/semantics/dustproof-control.k",
+      "verdict": "FAILS \u2014 as required",
+      "plain": "D1 with the maker-safety bound reversed \u2014 it asserts the taker gets MORE than the curve allows. Floor division cannot do that, so it must never prove. If it ever does, D1 is worthless."
+    },
+    {
       "file": "semantics/proofs/pricing-negative-control.k",
       "verdict": "FAILS \u2014 as required",
       "plain": "The pricing theorem with its safety inequality reversed. Must fail, and does."
     }
   ],
   "coverage": {
-    "opcodes_modelled": 3,
+    "opcodes_modelled": 20,
     "opcodes_total": 52,
     "modelled_list": [
+      "00",
+      "01",
+      "02",
+      "03",
+      "04",
+      "20",
       "23",
+      "24",
+      "25",
+      "26",
+      "2b",
+      "2c",
+      "2d",
+      "30",
+      "31",
+      "32",
+      "42",
+      "50",
       "53",
       "90"
     ],
-    "plain": "The K semantics models 3 of the 52 named opcodes. The decode loop is complete; the instruction set is not. Anything else falls through to a no-op in the model while the real VM rejects it, so Verify will say so rather than pretend."
+    "plain": "The K semantics models 20 of the 52 named opcodes. The decode loop is complete; the instruction set is not. Anything else falls through to a no-op in the model while the real VM rejects it, so Verify will say so rather than pretend."
   }
 }

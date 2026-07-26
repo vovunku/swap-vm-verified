@@ -38,7 +38,7 @@ check('drawer starts closed', !$('#drawer').classList.contains('open'));
 $('#openCat').click(); await sleep(60);
 check('opens on ☰ Examples', $('#drawer').classList.contains('open'));
 check('scrim shown', $('#scrim').classList.contains('open'));
-check('GOOD and BAD cards present', $$('#catCurated .card').length === 2,
+check('curated cards present (GOOD, BAD, DustProof)', $$('#catCurated .card').length === 3,
       `${$$('#catCurated .card').length} curated`);
 check('11 conformance cards present', $$('#catRest .card').length === 11,
       `${$$('#catRest .card').length} conformance`);

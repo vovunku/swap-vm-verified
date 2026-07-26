@@ -42,6 +42,12 @@
     "kind": "theorem"
   },
   {
+    "file": "semantics/proofs/invalidatetokenout-concrete.k",
+    "name": "invalidatetokenout-concrete",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
     "file": "semantics/proofs/jump-control.k",
     "name": "jump-control",
     "expected": "FAIL",
@@ -194,6 +200,12 @@
   {
     "file": "semantics/proofs/whitelistsequential-concrete.k",
     "name": "whitelistsequential-concrete",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/xycswap-concrete.k",
+    "name": "xycswap-concrete",
     "expected": "#Top",
     "kind": "theorem"
   }

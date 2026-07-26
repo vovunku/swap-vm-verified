@@ -137,7 +137,7 @@
   <h1>SwapVM — compose &amp; verify</h1>
   <span class="kicker">an order is a program</span>
   <span class="spacer"></span>
-  <button id="execute">▶ Run for real</button><button class="primary" id="verify">Verify</button>
+  <button id="prove">∴ Run the proof</button><button id="execute">▶ Run for real</button><button class="primary" id="verify">Verify</button>
 </div>
 
 <div class="scrim" id="scrim"></div>
@@ -254,6 +254,32 @@ async function loadExample(label){
   }
 }
 
+async function prove(){
+  const label = selected;
+  $('#exec').innerHTML = '<div class="empty">running kprove — spec and negative control…</div>';
+  const r = await post('/api/prove', {label});
+  if(!r.available){
+    $('#exec').innerHTML = verdictBlock('info','NO SPEC','No paired specification',
+      r.error||'', 'Verification here runs a human-written spec against the K semantics. '+
+      'It does not generate one, and it will not guess.', null, null); return;
+  }
+  const sp = r.spec, ct = r.control;
+  $('#exec').innerHTML =
+    verdictBlock(sp.top?'yes':'err', sp.top?'PROVED':'NOT PROVED',
+      `${esc(sp.spec)}.k — kprove returned ${sp.top?'#Top':'no proof'}`,
+      sp.top ? 'The theorem holds for every input in its stated domain.'
+             : 'kprove did not return #Top.',
+      `Ran just now in ${sp.seconds}s against the compiled K definition — not a cached verdict, `+
+      `not a pattern match.`, null, `dustproof/semantics/${sp.spec}.k`) +
+    verdictBlock(ct.exit!==0?'yes':'err', ct.exit!==0?'CONTROL OK':'CONTROL PROVED',
+      `${esc(ct.spec)}.k — ${esc(ct.verdict)}`,
+      ct.exit!==0 ? 'A deliberately false twin of the theorem. It must fail, and it did.'
+                  : 'The false claim PROVED. The rule set is inconsistent and every result above is void.',
+      `A proof that cannot fail proves nothing. This is the only check that catches an `+
+      `inconsistent rule set, which otherwise proves everything while looking like total success. `+
+      `Ran in ${ct.seconds}s.`, null, `dustproof/semantics/${ct.spec}.k`);
+}
+
 async function execute(){
   if(!program.length && !rawHex) return;
   $('#exec').innerHTML = '<div class="empty">running through the real VM…</div>';
@@ -338,6 +364,7 @@ async function boot(){
   $('#openCat').onclick=openDrawer; $('#closeCat').onclick=closeDrawer; $('#scrim').onclick=closeDrawer;
   $('#verify').onclick=verify;
   $('#execute').onclick=execute;
+  $('#prove').onclick=prove;
   $('#holds').onchange=()=>{ const e=$('#exec'); if(e&&e.innerHTML.trim()) execute(); };
   document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
   loadExample('__good');       // loads blocks; does NOT verify

@@ -98,7 +98,12 @@ def modelled() -> list:
     # definition knew 3 — which would make the demo stay SILENT about fifteen opcodes it
     # should flag as unmodelled. Under-warning is the precise failure this demo exists to
     # avoid, so the definition, not the directory, is the source of truth.
-    wiring = (ROOT / 'semantics/lemmas.k').read_text()
+    # Which file the build kompiles is itself derived, so this cannot drift when the entry
+    # point changes (it just did: lemmas.k -> _lemmas-all.k, closing defect C-1).
+    build = (ROOT / 'semantics/run-proofs.sh').read_text()
+    m = re.search(r'kompile\s+--backend\s+haskell\s+(\S+)', build)
+    entry = ROOT / 'semantics' / (m.group(1) if m else 'lemmas.k')
+    wiring = entry.read_text()
     sources = [ROOT / 'semantics/swapvm.md']          # always required by lemmas.k
     for f in sorted((ROOT / 'semantics/opcodes').glob('*.k')):
         if f'opcodes/{f.name}' in wiring or f'SWAPVM-{f.stem.upper()}' in wiring:
@@ -205,6 +210,30 @@ def claims() -> dict:
                     'Same overflow caveat as T1.',
                 ],
             },
+            {
+                'id': 'D1',
+                'file': '../dustproof/semantics/dustproof-spec.k',
+                'verdict': 'PROVED',
+                'applies_when': 'gate + Deadline + XYCSwap + Salt (the DustProof order)',
+                'plain': (
+                    'The taker receives exactly the constant-product price, rounded down to the '
+                    'wei — for any maker reserves and any trade size.'
+                ),
+                'why_it_is_strong': (
+                    'Proved with both Aqua-supplied reserves and the trade size left as unknowns, '
+                    'so it covers every pool and every order size at once. Two-sided: one bound '
+                    'alone would be satisfied by quoting zero.'
+                ),
+                'assumptions': [
+                    'The order parameters — gate token, deadline, salt — are fixed in the proved '
+                    'program. Reserves and trade size are not.',
+                    'block.timestamp is pinned by equality, not an inequality: the backend will '
+                    'not refute the opposite branch from an inequality premise '
+                    '(semantics/opcodes/deadline.md:125-156).',
+                    'Aqua supplies the reserves; there is no StaticBalances instruction, and the '
+                    'maker\'s committed balance is what bounds total payout.',
+                ],
+            },
         ],
         'negative_controls': [
             {
@@ -216,6 +245,13 @@ def claims() -> dict:
                     'above would be worthless. An inconsistent theory proves everything and '
                     'looks exactly like total success — this is the only check that catches it.'
                 ),
+            },
+            {
+                'file': '../dustproof/semantics/dustproof-control.k',
+                'verdict': 'FAILS — as required',
+                'plain': ('D1 with the maker-safety bound reversed — it asserts the taker gets MORE '
+                          'than the curve allows. Floor division cannot do that, so it must never '
+                          'prove. If it ever does, D1 is worthless.'),
             },
             {
                 'file': 'semantics/proofs/pricing-negative-control.k',
