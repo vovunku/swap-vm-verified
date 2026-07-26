@@ -50,28 +50,13 @@
     }
   ],
   "coverage": {
-    "opcodes_modelled": 18,
+    "opcodes_modelled": 3,
     "opcodes_total": 52,
     "modelled_list": [
-      "00",
-      "01",
-      "02",
-      "03",
-      "04",
-      "20",
       "23",
-      "24",
-      "25",
-      "26",
-      "2b",
-      "2c",
-      "2d",
-      "30",
-      "31",
-      "32",
       "53",
       "90"
     ],
-    "plain": "The K semantics models 18 of the 52 named opcodes. The decode loop is complete; the instruction set is not. Anything else falls through to a no-op in the model while the real VM rejects it, so Verify will say so rather than pretend."
+    "plain": "The K semantics models 3 of the 52 named opcodes. The decode loop is complete; the instruction set is not. Anything else falls through to a no-op in the model while the real VM rejects it, so Verify will say so rather than pretend."
   }
 }

@@ -1,19 +1,19 @@
 [
   {
+    "file": "semantics/proofs/conformance-concrete.k",
+    "name": "conformance-concrete",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
     "file": "semantics/proofs/control-sensitivity.k",
     "name": "control-sensitivity",
     "expected": "#Top",
     "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/deadline-control.k",
-    "name": "deadline-control",
-    "expected": "FAIL",
-    "kind": "negative control"
-  },
-  {
-    "file": "semantics/proofs/deadline-spec.k",
-    "name": "deadline-spec",
+    "file": "semantics/proofs/deadline-concrete.k",
+    "name": "deadline-concrete",
     "expected": "#Top",
     "kind": "theorem"
   },
@@ -36,14 +36,8 @@
     "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/gte-control.k",
-    "name": "gte-control",
-    "expected": "FAIL",
-    "kind": "negative control"
-  },
-  {
-    "file": "semantics/proofs/gte-spec.k",
-    "name": "gte-spec",
+    "file": "semantics/proofs/gte-concrete.k",
+    "name": "gte-concrete",
     "expected": "#Top",
     "kind": "theorem"
   },
@@ -168,14 +162,14 @@
     "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/supplyshare-control.k",
-    "name": "supplyshare-control",
-    "expected": "FAIL",
-    "kind": "negative control"
+    "file": "semantics/proofs/supplyshare-concrete.k",
+    "name": "supplyshare-concrete",
+    "expected": "#Top",
+    "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/supplyshare-spec.k",
-    "name": "supplyshare-spec",
+    "file": "semantics/proofs/txorigin-concrete.k",
+    "name": "txorigin-concrete",
     "expected": "#Top",
     "kind": "theorem"
   },
@@ -192,26 +186,14 @@
     "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/whitelistcoequal-control.k",
-    "name": "whitelistcoequal-control",
-    "expected": "FAIL",
-    "kind": "negative control"
-  },
-  {
-    "file": "semantics/proofs/whitelistcoequal-spec.k",
-    "name": "whitelistcoequal-spec",
+    "file": "semantics/proofs/whitelistcoequal-concrete.k",
+    "name": "whitelistcoequal-concrete",
     "expected": "#Top",
     "kind": "theorem"
   },
   {
-    "file": "semantics/proofs/whitelistsequential-control.k",
-    "name": "whitelistsequential-control",
-    "expected": "FAIL",
-    "kind": "negative control"
-  },
-  {
-    "file": "semantics/proofs/whitelistsequential-spec.k",
-    "name": "whitelistsequential-spec",
+    "file": "semantics/proofs/whitelistsequential-concrete.k",
+    "name": "whitelistsequential-concrete",
     "expected": "#Top",
     "kind": "theorem"
   }

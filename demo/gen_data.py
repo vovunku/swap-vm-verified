@@ -92,8 +92,20 @@ def modelled() -> list:
     going stale, which it already did once — `OPCODE-BACKLOG.md` still says "3 are modelled"
     after fifteen more landed.
     """
+    # A rule file on disk is NOT a modelled opcode. `semantics/lemmas.k` is what
+    # `run-proofs.sh` kompiles, so an opcode counts only if its module is actually
+    # required/imported there. Scanning files alone reported 18 while the compiled
+    # definition knew 3 — which would make the demo stay SILENT about fifteen opcodes it
+    # should flag as unmodelled. Under-warning is the precise failure this demo exists to
+    # avoid, so the definition, not the directory, is the source of truth.
+    wiring = (ROOT / 'semantics/lemmas.k').read_text()
+    sources = [ROOT / 'semantics/swapvm.md']          # always required by lemmas.k
+    for f in sorted((ROOT / 'semantics/opcodes').glob('*.k')):
+        if f'opcodes/{f.name}' in wiring or f'SWAPVM-{f.stem.upper()}' in wiring:
+            sources.append(f)
+
     ops = set()
-    for f in [ROOT / 'semantics/swapvm.md'] + sorted((ROOT / 'semantics/opcodes').glob('*.k')):
+    for f in sources:
         if not f.exists():
             continue
         for m in re.findall(r'#exec\s*\(\s*(\d+)', f.read_text()):
