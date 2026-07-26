@@ -416,7 +416,11 @@ function sourcesBlock(sources){
   return `<div class="srcwrap">
     ${sol.length?`<div class="srchdr">The Solidity your program dispatches to — from
       <span class="mono">src/opcodes/Opcodes.sol</span>, the table the VM really branches
-      on</div>${sol.map(one).join('')}`:''}
+      on${ sol.some(k=>!sources[k].fn)
+        ? `, plus the builder a maker calls to produce these bytes`
+        : `. <b>No builder in this repo emits this program.</b> The builders can only emit
+           the shapes the theorems were proved about, so a program they cannot produce has
+           gone around that guarantee.` }</div>${sol.map(one).join('')}`:''}
     ${ks.length?`<div class="srchdr" style="margin-top:14px">The specifications — where the
       wording above actually comes from</div>${ks.map(one).join('')}`:''}</div>`;
 }

@@ -445,6 +445,26 @@ def _extract_fn(path: pathlib.Path, fn: str) -> str | None:
     return '\n'.join(lines[head:end + 1])
 
 
+# Program shape -> the code that builds it. Both entries are the same idea: a maker does not
+# hand-assemble bytes, they call a builder, and the builder is where the guarantee lives --
+# it can only emit the one shape the theorems were proved about.
+#
+# `ProgramBytes.t.sol` is included alongside the permissioned-swap builder on purpose. The K
+# semantics decodes a byte layout that was derived by hand from the encoders; that test
+# asserts the SDK-built program is byte-identical to it. Without the test, a changed encoder
+# would leave the semantics quietly describing a program nobody builds.
+BUILDERS = {
+    (('23', 20), ('90', 64), ('53', 1)): (
+        'test/example/PermissionedSwapExample.sol',
+        'test/example/ProgramBytes.t.sol',
+    ),
+    (('23', 20), ('20', 5), ('50', 0), ('02', 8)): (
+        'dustproof/contracts/DustOrderBuilder.sol',
+        'dustproof/contracts/DustSweeper.sol',
+    ),
+}
+
+
 def _contract_doc(path: pathlib.Path, fn: str | None = None) -> dict:
     """What the file IS: its declaration, its own natspec, and what else it handles.
 
@@ -503,18 +523,20 @@ def sources_for(steps: list, applicable: list, proof: dict | None = None) -> dic
                                    'full': whole, 'full_lines': whole.count('\n') + 1,
                                    'contract': _contract_doc(ROOT / rel, fn)}
 
-    # The contracts DustProof itself is, as opposed to the instructions it composes. They
-    # are not reachable from the dispatch table -- no opcode routes to them -- so without
-    # this the page shows the program and the specs but never the product's own code.
-    if [(s.get('op'), s.get('argsLen')) for s in steps if not s.get('error')] == \
-            [('23', 20), ('20', 5), ('50', 0), ('02', 8)]:
-        for rel in ('contracts/DustOrderBuilder.sol', 'contracts/DustSweeper.sol'):
-            p = ROOT.parent / 'dustproof' / rel
-            if p.exists():
-                out[f'dustproof/{rel}'] = {
-                    'kind': 'solidity', 'path': f'dustproof/{rel}', 'fn': None,
-                    'opcode': None, 'text': p.read_text(),
-                    'contract': _contract_doc(p)}
+    # The code that BUILDS each program, as opposed to the instructions it composes. None of
+    # it is reachable from the dispatch table -- no opcode routes to a builder -- so without
+    # this the page shows the program and the specs but never the code a maker actually runs
+    # to produce those bytes. Keyed by the exact program shape, so a program that merely
+    # resembles one of these does not get credited with a builder it did not come from.
+    for shape, files in BUILDERS.items():
+        if [(s.get('op'), s.get('argsLen')) for s in steps if not s.get('error')] == list(shape):
+            for rel in files:
+                p = (ROOT / rel) if (ROOT / rel).exists() else (ROOT.parent / rel)
+                if p.exists():
+                    out[rel] = {'kind': 'solidity', 'path': rel, 'fn': None, 'opcode': None,
+                                'text': p.read_text(), 'full': p.read_text(),
+                                'full_lines': p.read_text().count('\n') + 1,
+                                'contract': _contract_doc(p)}
 
     def add_spec(rel):
         for base in (ROOT, ROOT.parent / 'dustproof', ROOT / 'semantics'):

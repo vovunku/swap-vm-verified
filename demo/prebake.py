@@ -343,7 +343,12 @@ function renderSources(e){
   return `<section><h4>Read the sources</h4>
     ${sol.length ? `<div class="srchdr">The Solidity each instruction dispatches to —
        taken from <span class="mono">src/opcodes/Opcodes.sol</span>, the table the VM really
-       branches on</div>${sol.map(one).join('')}` : ''}
+       branches on${ sol.some(k => !S[k].fn)
+         ? `, plus the builder a maker calls to produce these bytes`
+         : `. <b>No builder in this repo emits this program.</b> The builders can only emit
+            the shapes the theorems were proved about, so a program they cannot produce has
+            gone around that guarantee — which is exactly how the byte above got changed.` }
+       </div>${sol.map(one).join('')}` : ''}
     ${ks.length ? `<div class="srchdr" style="margin-top:14px">The specifications — this is
        where the prose above comes from, and the only place a claim is actually
        stated</div>${ks.map(one).join('')}` : ''}

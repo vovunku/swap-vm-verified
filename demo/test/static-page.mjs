@@ -112,9 +112,13 @@ const kbox = boxes.find(b => /\.k$/.test(b.querySelector('summary').textContent.
 ok(!!kbox && kbox.querySelector('pre').textContent.includes('claim'),
    'a K spec is shown, and it is the real claim text');
 // The path shown must be a real path, or "read the source" is an invitation to nothing.
-ok(boxes.every(b => /^(src|semantics|\.\.\/dustproof)\//.test(
+// Every summary must start with a real repo path, or "read the source" is an invitation to
+// nothing. The set is the four places sources come from: instruction implementations, the
+// K specs, the example builders, and DustProof's own contracts.
+ok(boxes.every(b => /^(src|semantics|test|dustproof|\.\.\/dustproof)\//.test(
      b.querySelector('summary').textContent.trim())),
-   'every source is labelled with its repo path');
+   'every source is labelled with its repo path',
+   boxes.map(b => b.querySelector('summary').textContent.trim().split(' ')[0]).join(' '));
 
 console.log('\n8. the catalogue is only the three programs that carry a proof');
 ok(DATA.examples.length === 3, 'exactly three programs', `${DATA.examples.length}`);
@@ -141,6 +145,22 @@ ok(/the whole file — \d+ lines/.test($('#main').innerHTML), 'it says how long 
 const kb = $$('.srcbox').find(b => /\.k$/.test(b.querySelector('summary').textContent.trim()));
 ok(!!kb && /this is the invariant/.test(kb.textContent),
    'the K spec leads with the claim and labels it as the invariant');
+
+// The builder is where the guarantee lives: it can only emit shapes the theorems cover.
+$$('.item')[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+ok(/PermissionedSwapExample\.sol/.test($('#main').innerHTML),
+   'the verified program shows the builder a maker actually calls');
+ok(/ProgramBytes\.t\.sol/.test($('#main').innerHTML),
+   'and the test asserting those bytes match the layout the K semantics decodes');
+$$('.item')[2].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+ok(/DustOrderBuilder\.sol/.test($('#main').innerHTML) &&
+   /DustSweeper\.sol/.test($('#main').innerHTML),
+   'DustProof shows both of its own contracts');
+$$('.item')[1].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+ok(/No builder in this repo emits this program/.test($('#main').innerHTML),
+   'the one-byte-wrong program says no builder produces it — the absence is stated, not left blank');
+ok(!/PermissionedSwapExample\.sol/.test($('#main').innerHTML),
+   'and it is not credited with a builder it did not come from');
 
 console.log('\n10. nothing is editable');
 ok($$('input, textarea, select').length === 0, 'no inputs on the page',
