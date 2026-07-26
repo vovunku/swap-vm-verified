@@ -73,8 +73,10 @@ def main() -> int:
     check('52 named opcodes (DEMO.md §5a)', len(opcodes) == 52, str(len(opcodes)))
     check('claims.json agrees on the total',
           claims['coverage']['opcodes_total'] == len(opcodes))
-    check('3 opcodes modelled by the K semantics',
-          len(server.MODELLED) == claims['coverage']['opcodes_modelled'] == 3)
+    n = claims['coverage']['opcodes_modelled']
+    check(f'{n} opcodes modelled — server agrees with generated data',
+          len(server.MODELLED) == n, f'server has {len(server.MODELLED)}')
+    check('the modelled set is non-trivial and grew past the original three', n >= 3, str(n))
     check('every modelled opcode exists in the enum',
           all(o in opcodes for o in server.MODELLED))
 

@@ -38,9 +38,12 @@ OPCODES = json.loads((DATA / 'opcodes.json').read_text())
 EXAMPLES = json.loads((DATA / 'examples.json').read_text())
 CLAIMS = json.loads((DATA / 'claims.json').read_text())
 
-# Instructions the K semantics actually models. Everything else falls through to a no-op in
-# the model while production reverts UnknownOpcode -- so Verify must say so, not stay silent.
-MODELLED = {'23', '90', '53'}
+# Instructions the K semantics actually models, derived by gen_data.py from the rules
+# themselves (swapvm.md plus semantics/opcodes/*.k) rather than hand-listed. Everything else
+# falls through to a no-op in the model while production reverts UnknownOpcode -- so Verify
+# must say so, not stay silent.
+MODELLED = set(CLAIMS['coverage']['modelled_list'])
+PROOFS = json.loads((DATA / 'proofs.json').read_text())
 
 # Block palette. `args` describes the fields a user edits; `size` is the byte width each
 # field occupies, matching the *ArgsBuilder helpers in src/instructions/.
@@ -360,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
                                  'blocks': blocks, 'unsupported': unsupported,
                                  'editable': not unsupported})
             return self._send(200, {'blocks': BLOCKS, 'opcodes': OPCODES,
-                                    'examples': examples, 'claims': CLAIMS})
+                                    'examples': examples, 'claims': CLAIMS, 'proofs': PROOFS})
         return self._send(404, {'error': 'not found'})
 
     def do_POST(self):

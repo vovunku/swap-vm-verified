@@ -84,6 +84,40 @@ def examples() -> list:
     return out
 
 
+def modelled() -> list:
+    """Opcodes the K semantics actually models — scanned from the rules, never hand-listed.
+
+    They live in two places: the original three in `semantics/swapvm.md`, and the rest as
+    sibling modules in `semantics/opcodes/*.k`. Scanning both is what stops this number
+    going stale, which it already did once — `OPCODE-BACKLOG.md` still says "3 are modelled"
+    after fifteen more landed.
+    """
+    ops = set()
+    for f in [ROOT / 'semantics/swapvm.md'] + sorted((ROOT / 'semantics/opcodes').glob('*.k')):
+        if not f.exists():
+            continue
+        for m in re.findall(r'#exec\s*\(\s*(\d+)', f.read_text()):
+            ops.add(f'{int(m):02x}')
+    return sorted(ops)
+
+
+def theorems() -> list:
+    """Every spec/control pair under semantics/proofs, with its expected verdict.
+
+    A file named *-control.k or *negative-control.k is a claim asserted to FAIL. That is the
+    design: a proof that cannot fail proves nothing, and an inconsistent rule set proves
+    everything while looking like total success.
+    """
+    out = []
+    for f in sorted((ROOT / 'semantics/proofs').glob('*.k')):
+        name = f.stem
+        is_control = 'control' in name
+        out.append({'file': f'semantics/proofs/{f.name}', 'name': name,
+                    'expected': 'FAIL' if is_control else '#Top',
+                    'kind': 'negative control' if is_control else 'theorem'})
+    return out
+
+
 def claims() -> dict:
     """What has been proven, stated for a human rather than for a prover.
 
@@ -173,11 +207,12 @@ def claims() -> dict:
             },
         ],
         'coverage': {
-            'opcodes_modelled': 3,
+            'opcodes_modelled': len(modelled()),
             'opcodes_total': 52,
+            'modelled_list': modelled(),
             'plain': (
-                'The K semantics models 3 of the 52 opcodes — exactly the ones this example '
-                'program uses. The decode loop is complete; the instruction set is not. '
+                f'The K semantics models {len(modelled())} of the 52 named opcodes. '
+                'The decode loop is complete; the instruction set is not. '
                 'Anything else falls through to a no-op in the model while the real VM '
                 'rejects it, so Verify will say so rather than pretend.'
             ),
@@ -187,7 +222,8 @@ def claims() -> dict:
 
 def main() -> int:
     OUT.mkdir(exist_ok=True)
-    data = {'opcodes.json': opcodes(), 'examples.json': examples(), 'claims.json': claims()}
+    data = {'opcodes.json': opcodes(), 'examples.json': examples(),
+            'claims.json': claims(), 'proofs.json': theorems()}
     for name, payload in data.items():
         (OUT / name).write_text(json.dumps(payload, indent=2) + '\n')
         n = len(payload) if isinstance(payload, (list, dict)) else 0

@@ -1,0 +1,218 @@
+[
+  {
+    "file": "semantics/proofs/control-sensitivity.k",
+    "name": "control-sensitivity",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/deadline-control.k",
+    "name": "deadline-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/deadline-spec.k",
+    "name": "deadline-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/extruction-control.k",
+    "name": "extruction-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/extruction-spec.k",
+    "name": "extruction-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/gate-spec.k",
+    "name": "gate-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/gte-control.k",
+    "name": "gte-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/gte-spec.k",
+    "name": "gte-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/jump-control.k",
+    "name": "jump-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/jump-spec.k",
+    "name": "jump-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/jumpifdirection-control.k",
+    "name": "jumpifdirection-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/jumpifdirection-spec.k",
+    "name": "jumpifdirection-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/jumpiftokenin-control.k",
+    "name": "jumpiftokenin-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/jumpiftokenin-spec.k",
+    "name": "jumpiftokenin-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/jumpiftokenout-control.k",
+    "name": "jumpiftokenout-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/jumpiftokenout-spec.k",
+    "name": "jumpiftokenout-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/negative-control.k",
+    "name": "negative-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/pricing-exactout-spec.k",
+    "name": "pricing-exactout-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/pricing-negative-control.k",
+    "name": "pricing-negative-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/pricing-spec.k",
+    "name": "pricing-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/privateorder-control.k",
+    "name": "privateorder-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/privateorder-spec.k",
+    "name": "privateorder-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/revert-control.k",
+    "name": "revert-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/revert-spec.k",
+    "name": "revert-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/salt-control.k",
+    "name": "salt-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/salt-spec.k",
+    "name": "salt-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/stop-control.k",
+    "name": "stop-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/stop-spec.k",
+    "name": "stop-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/supplyshare-control.k",
+    "name": "supplyshare-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/supplyshare-spec.k",
+    "name": "supplyshare-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/txorigin-control.k",
+    "name": "txorigin-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/txorigin-spec.k",
+    "name": "txorigin-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/whitelistcoequal-control.k",
+    "name": "whitelistcoequal-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/whitelistcoequal-spec.k",
+    "name": "whitelistcoequal-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  },
+  {
+    "file": "semantics/proofs/whitelistsequential-control.k",
+    "name": "whitelistsequential-control",
+    "expected": "FAIL",
+    "kind": "negative control"
+  },
+  {
+    "file": "semantics/proofs/whitelistsequential-spec.k",
+    "name": "whitelistsequential-spec",
+    "expected": "#Top",
+    "kind": "theorem"
+  }
+]
