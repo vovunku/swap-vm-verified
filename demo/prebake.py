@@ -42,6 +42,7 @@ def bake_example(ex: dict) -> dict:
         if d:
             a['docfile'] = d['file']
         a.pop('verdict', None)      # a verdict comes from kprove, never from a shape match
+    proof = server.RUNS.get('proofs', {}).get(ex['label'])
     return {
         'label': ex['label'],
         'title': ex.get('title') or server.EXAMPLE_NOTES.get(ex['label'], (ex['label'], ''))[0],
@@ -52,8 +53,15 @@ def bake_example(ex: dict) -> dict:
         'steps': steps,
         'applicable': applicable,
         'lint': server.lint(steps),
-        'proof': server.RUNS.get('proofs', {}).get(ex['label']),
+        'proof': proof,
         'exec': {g: server.RUNS.get('executions', {}).get(f'{ex["label"]}|{g}') for g in (0, 5)},
+        # What the K model predicts. Shown NEXT TO the real run, because that comparison is
+        # the entire conformance argument: the L2 theorems are about the model, and they mean
+        # something about production only insofar as the two agree. Where they disagree --
+        # the malformed programs, where the model no-ops and the VM reverts -- that is the
+        # honest weak spot of the project and the page should say it out loud.
+        'expect': ex.get('expect'),
+        'sources': server.sources_for(steps, applicable, proof),
     }
 
 
@@ -72,9 +80,12 @@ def main() -> int:
         return 1
 
     curated = server.curated()
-    others = [e for e in server.EXAMPLES
-              if e['label'] not in {c['label'] for c in curated} and e.get('bytes')]
+    others = [e for e in server.catalogue() if e['label'] not in {c['label'] for c in curated}]
     examples = [bake_example(e) for e in curated + others]
+    if server.HIDDEN:
+        print('  omitted, each for a reason:')
+        for k, why in server.HIDDEN.items():
+            print(f'    {k:18s} {why}')
 
     payload = {
         'examples': examples,
@@ -167,6 +178,16 @@ details ul{margin:7px 0 0 0;padding-left:19px;font-size:13px;color:var(--dim)}
 .gate button{font:inherit;font-size:12.5px;padding:5px 12px;border-radius:6px;cursor:pointer;
   border:1px solid var(--line);background:var(--panel);color:var(--dim)}
 .gate button.on{border-color:var(--acc);color:var(--acc);background:var(--panel2)}
+.srchdr{font-size:12.5px;color:var(--dim);margin-bottom:8px}
+.srcbox{border:1px solid var(--line);border-radius:7px;background:var(--panel);margin-bottom:7px}
+.srcbox>summary{padding:9px 13px;font-size:12.5px;color:var(--acc);
+  font-family:ui-monospace,monospace;list-style:none}
+.srcbox>summary::-webkit-details-marker{display:none}
+.srcbox>summary::before{content:"▸ ";color:var(--dim)}
+.srcbox[open]>summary::before{content:"▾ "}
+.srcbox[open]>summary{border-bottom:1px solid var(--line)}
+.srcbox pre{margin:0;padding:13px;overflow-x:auto;font-size:12px;line-height:1.5;
+  background:var(--panel2);border-radius:0 0 6px 6px;white-space:pre}
 footer{padding:20px 30px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px;
   background:var(--panel)}
 footer code{background:var(--panel2);padding:1px 5px;border-radius:4px}
@@ -275,6 +296,54 @@ function renderExec(e){
   return bar + body;
 }
 
+function renderSources(e){
+  const S = e.sources || {};
+  const keys = Object.keys(S);
+  if(!keys.length) return '';
+  const one = k => {
+    const s = S[k];
+    const head = s.kind==='solidity'
+      ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}`
+      : `${s.path}`;
+    return `<details class="srcbox"><summary>${esc(head)}</summary>
+      <pre class="mono">${esc(s.text)}</pre></details>`;
+  };
+  const sol = keys.filter(k => S[k].kind==='solidity');
+  const ks  = keys.filter(k => S[k].kind==='k');
+  return `<section><h4>Read the sources</h4>
+    ${sol.length ? `<div class="srchdr">The Solidity each instruction dispatches to —
+       taken from <span class="mono">src/opcodes/Opcodes.sol</span>, the table the VM really
+       branches on</div>${sol.map(one).join('')}` : ''}
+    ${ks.length ? `<div class="srchdr" style="margin-top:14px">The specifications — this is
+       where the prose above comes from, and the only place a claim is actually
+       stated</div>${ks.map(one).join('')}` : ''}
+  </section>`;
+}
+
+function renderModel(e){
+  if(!e.expect) return '';
+  const real = e.exec[gate] || {};
+  const m = e.expect;
+  const modelRan = m.status && m.status !== 'Reverted';
+  const vmRan = real.status === 'completed';
+  const agree = modelRan === vmRan;
+  return `<section><h4>K model vs the real VM</h4>
+    ${vblock(agree?'yes':'warnb', agree?'AGREE':'DIVERGE',
+      agree ? 'The model and the VM behave the same way here'
+            : 'The model and the VM behave DIFFERENTLY here',
+      `Model: ${m.status}${m.pc!=null?`, final pc ${m.pc}`:''}`+
+      `${m.amountOut!=null?`, amountOut ${m.amountOut}`:''}  ·  `+
+      `VM: ${real.status||'not recorded'}${real.nextPC!=null?`, final pc ${real.nextPC}`:''}`+
+      `${real.amountOut!=null?`, amountOut ${real.amountOut}`:''}`,
+      agree ? 'The L2 theorems are proved about the model. They say something about '+
+              'production only where the two agree, so this is the check that gives them '+
+              'their meaning.'
+            : 'The model continues where production reverts. Every theorem proved about '+
+              'this program in the model therefore says nothing about the deployed VM — '+
+              'this is the honest limit of the approach, not a detail.',
+      null, 'semantics/swapvm.md')}</section>`;
+}
+
 function render(){
   const e = DATA.examples[cur];
   document.getElementById('main').innerHTML = `
@@ -298,7 +367,9 @@ function render(){
     }</section>
 
     <section><h4>What kprove returned</h4>${renderProof(e)}</section>
-    <section><h4>What the real VM did</h4>${renderExec(e)}</section>`;
+    <section><h4>What the real VM did</h4>${renderExec(e)}</section>
+    ${renderModel(e)}
+    ${renderSources(e)}`;
 
   document.querySelectorAll('.gate button').forEach(b =>
     b.onclick = () => { gate = +b.dataset.g; render(); });

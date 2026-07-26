@@ -46,9 +46,18 @@ ok(/opcodes modelled/.test($('#hdr').textContent), 'header summarises coverage',
 ok(!/undefined|NaN|\[object/.test($('#hdr').textContent), 'header has no undefined fields',
    $('#hdr').textContent.slice(0, 80));
 
-console.log('\n3. every example is reachable and renders');
+console.log('\n3. every example is reachable, distinct, and renders');
 const items = $$('.item');
-ok(items.length === 13, 'all 13 programs listed', `${items.length} items`);
+const DATA = window.DATA ?? JSON.parse(html.match(/const DATA = (\{[\s\S]*?\});\n/)[1]);
+ok(items.length === DATA.examples.length, 'every baked program is listed',
+   `${items.length} items`);
+// The cull's whole point: a catalogue entry that shows nothing the others do not is noise.
+// Two entries with the same bytes render the same panels, so they cannot both be earning it.
+const byBytes = new Map();
+for (const e of DATA.examples) byBytes.set(e.bytes, [...(byBytes.get(e.bytes) ?? []), e.label]);
+const dupes = [...byBytes.values()].filter(l => l.length > 1);
+ok(dupes.length === 0, 'no two entries are byte-identical',
+   dupes.length ? `duplicates: ${JSON.stringify(dupes)}` : `${byBytes.size} distinct programs`);
 let broken = [];
 for (let i = 0; i < items.length; i++) {
   $$('.item')[i].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -90,7 +99,36 @@ ok(/Ran to completion/.test(held), 'holding the gate token: completes');
 ok(/Reverted/.test(notHeld) && /TakerTokenBalanceIsZero/.test(notHeld),
    'holding none: reverts at the gate');
 
-console.log('\n7. nothing is editable');
+console.log('\n7. the sources are readable without leaving the page');
+$$('.item')[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+const boxes = $$('.srcbox');
+ok(boxes.length >= 5, 'Solidity and K sources are expandable', `${boxes.length} boxes`);
+ok(boxes.every(b => !b.open), 'they start collapsed');
+const sol = boxes.find(b => /Controls\.sol/.test(b.querySelector('summary').textContent));
+ok(!!sol, 'the gate instruction\'s Solidity is one of them');
+ok(/require\(balance > 0/.test(sol.querySelector('pre').textContent),
+   'it contains the actual guard, not a whole file to hunt through');
+const kbox = boxes.find(b => /\.k$/.test(b.querySelector('summary').textContent.trim()));
+ok(!!kbox && kbox.querySelector('pre').textContent.includes('claim'),
+   'a K spec is shown, and it is the real claim text');
+// The path shown must be a real path, or "read the source" is an invitation to nothing.
+ok(boxes.every(b => /^(src|semantics|\.\.\/dustproof)\//.test(
+     b.querySelector('summary').textContent.trim())),
+   'every source is labelled with its repo path');
+
+console.log('\n8. model vs VM is stated, including where it diverges');
+const withModel = DATA.examples.filter(e => e.expect);
+ok(withModel.length > 0, 'conformance entries carry the K model prediction',
+   `${withModel.length} of ${DATA.examples.length}`);
+let sawDiverge = false;
+for (let i = 0; i < items.length; i++) {
+  $$('.item')[i].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  if (/DIVERGE/.test($('#main').innerHTML)) sawDiverge = true;
+}
+ok(sawDiverge, 'at least one program is shown where the model and the VM disagree',
+   'the malformed-program cases — the honest weak spot, not hidden');
+
+console.log('\n9. nothing is editable');
 ok($$('input, textarea, select').length === 0, 'no inputs on the page',
    `${$$('input, textarea, select').length} found`);
 ok($$('[contenteditable]').length === 0, 'nothing contenteditable');

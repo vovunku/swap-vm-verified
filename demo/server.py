@@ -209,6 +209,25 @@ EXAMPLE_NOTES = {
 }
 
 
+# Conformance examples that carry nothing the demo does not already show. They stay in
+# examples.json -- selftest.py checks the K model against every one of them, and that is
+# their real job -- but they are not worth a slot in a catalogue a person reads.
+#
+# The measure is: does clicking it show something the other entries do not?
+HIDDEN = {
+    'catalogue':       'byte-identical to the "Permissioned swap" entry above it',
+    'gateRejects':     'the gate toggle on "Permissioned swap" already shows exactly this',
+    'revRecompute':    'byte-identical to "Reversed token order"; it differs only in the K '
+                       'configuration (amountOut preset), which this catalogue does not vary',
+    'revRecomputeOut': 'byte-identical to "Reversed token order", same reason',
+}
+
+
+def catalogue() -> list:
+    """The conformance examples worth showing, each for a stated reason."""
+    return [e for e in EXAMPLES if e.get('bytes') and e['label'] not in HIDDEN]
+
+
 def curated() -> list:
     """Two hand-picked programs that differ by ONE BYTE, shown first in the catalogue.
 
@@ -355,6 +374,104 @@ def proved(steps: list) -> list:
                         'because': ('The pricing theorems were proved about the exact sequence '
                                     'gate -> maker reserves -> limit swap. This program has a different shape.')})
     return results
+
+
+# ---------------------------------------------------------------------------------------
+# Sources. The page claims things about Solidity and about K files; both should be readable
+# without leaving it, because "trust me, the spec says so" is the failure mode here.
+# ---------------------------------------------------------------------------------------
+
+ROOT = HERE.parent
+
+
+def _dispatch_map() -> dict:
+    """opcode NAME -> (solidity path, function name), read off the production dispatch table.
+
+    Derived, not hand-listed. `src/opcodes/Opcodes.sol` is what the VM actually branches on,
+    so parsing it means the page cannot drift into showing a function that no longer runs --
+    and if the table changes shape, the map comes back empty rather than quietly wrong.
+    """
+    src = (ROOT / 'src/opcodes/Opcodes.sol')
+    if not src.exists():
+        return {}
+    text = src.read_text()
+    imports = dict(re.findall(r'import\s*\{\s*(\w+)\s*\}\s*from\s*"([^"]+)"', text))
+    out = {}
+    for name, lib, fn in re.findall(
+            r'opcode == uint256\(Opcode\.(\w+)\)\)\s*(\w+)\.(\w+)\(', text):
+        rel = imports.get(lib, f'../instructions/{lib}.sol')
+        path = (src.parent / rel).resolve()
+        try:
+            out[name] = (str(path.relative_to(ROOT)), fn)
+        except ValueError:
+            continue
+    return out
+
+
+DISPATCH = _dispatch_map()
+
+
+def _extract_fn(path: pathlib.Path, fn: str) -> str | None:
+    """Pull one function plus its doc comment out of a .sol file, by brace matching.
+
+    The function, not the whole file: the point is the code that runs for THIS opcode, and
+    a 400-line file with the relevant 5 lines somewhere inside it is not evidence anyone
+    reads. Returns None rather than a guess if the shape is unexpected.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    start = next((i for i, l in enumerate(lines)
+                  if re.match(rf'\s*function\s+{re.escape(fn)}\s*\(', l)), None)
+    if start is None:
+        return None
+    # Walk back over the natspec block that documents it.
+    head = start
+    while head > 0 and re.match(r'\s*(///|\*|/\*)', lines[head - 1]):
+        head -= 1
+    depth, end = 0, None
+    for i in range(start, len(lines)):
+        depth += lines[i].count('{') - lines[i].count('}')
+        if depth <= 0 and '{' in ''.join(lines[start:i + 1]):
+            end = i
+            break
+    if end is None:
+        return None
+    return '\n'.join(lines[head:end + 1])
+
+
+def sources_for(steps: list, applicable: list, proof: dict | None = None) -> dict:
+    """Every artefact behind one program: the Solidity each instruction dispatches to, and
+    the K specs that constrain it. Keyed by repo-relative path so the page can label them."""
+    out = {}
+    for s in steps:
+        name = s.get('name')
+        if not name or name not in DISPATCH:
+            continue
+        rel, fn = DISPATCH[name]
+        body = _extract_fn(ROOT / rel, fn)
+        if body:
+            out[f'{rel}::{fn}'] = {'kind': 'solidity', 'path': rel, 'fn': fn,
+                                   'opcode': s.get('op'), 'text': body}
+
+    def add_spec(rel):
+        for base in (ROOT, ROOT.parent / 'dustproof', ROOT / 'semantics'):
+            p = (base / rel)
+            if p.exists() and p.is_file():
+                out[rel] = {'kind': 'k', 'path': rel, 'text': p.read_text()}
+                return
+
+    for a in applicable:
+        if a.get('holds') and a.get('file'):
+            add_spec(a['file'])
+    if proof and proof.get('available'):
+        for side in ('spec', 'control'):
+            nm = (proof.get(side) or {}).get('spec')
+            if nm:
+                add_spec(f'semantics/proofs/{nm}.k')
+                add_spec(f'../dustproof/semantics/{nm}.k')
+    return out
 
 
 # Error selectors, so a revert shows a name rather than four hex bytes.
@@ -533,7 +650,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, (STATIC / 'index.html').read_bytes(), 'text/html; charset=utf-8')
         if path == '/api/bootstrap':
             examples = []
-            for e in curated() + EXAMPLES:
+            for e in curated() + catalogue():
                 title, note = (e.get('title'), e.get('note')) if e.get('kind') \
                     else EXAMPLE_NOTES.get(e['label'], (e['label'], ''))
                 blocks, unsupported = disassemble(e['bytes'])
@@ -578,6 +695,7 @@ class Handler(BaseHTTPRequestHandler):
                 a.pop('verdict', None)          # a verdict comes from kprove, never from here
             return self._send(200, {'hex': hexstr, 'length': len(hexstr) // 2, 'steps': steps,
                                     'applicable': applicable, 'lint': lint(steps),
+                                    'sources': sources_for(steps, applicable),
                                     'coverage': CLAIMS['coverage'],
                                     'controls': CLAIMS['negative_controls']})
         return self._send(404, {'error': 'not found'})

@@ -40,7 +40,11 @@ check('opens on ☰ Examples', $('#drawer').classList.contains('open'));
 check('scrim shown', $('#scrim').classList.contains('open'));
 check('curated cards present (GOOD, BAD, DustProof)', $$('#catCurated .card').length === 3,
       `${$$('#catCurated .card').length} curated`);
-check('11 conformance cards present', $$('#catRest .card').length === 11,
+// Six, not eleven. The other five were culled because clicking them showed nothing the
+// remaining entries do not -- two pairs were byte-identical and one duplicated the gate
+// toggle. They still live in examples.json, where selftest.py checks the K model against
+// every one of them; that is their job, not filling a drawer a person reads.
+check('6 conformance cards present', $$('#catRest .card').length === 6,
       `${$$('#catRest .card').length} conformance`);
 $('#scrim').click(); await sleep(60);
 check('closes on scrim click', !$('#drawer').classList.contains('open'));
@@ -52,6 +56,20 @@ check('T0 reported as applicable (not a verdict)', /APPLIES/.test(res) && /T0/.t
 check('assumptions are exposed', $$('#results details').length >= 1,
       `${$$('#results details').length} disclosures`);
 check('"what was not checked" note present', /What was not checked/i.test(res));
+
+// The sources, so "the spec says so" is checkable in place rather than taken on trust.
+const boxes = $$('#results .srcbox');
+check('Solidity and K sources are expandable', boxes.length >= 5, `${boxes.length} boxes`);
+check('they start collapsed', boxes.every(b => !b.open));
+const solBox = boxes.find(b => /Controls\.sol/.test(b.querySelector('summary').textContent));
+check('the gate instruction\'s Solidity is shown', !!solBox);
+check('it is the function, not the whole file',
+      !!solBox && /require\(balance > 0/.test(solBox.querySelector('pre').textContent)
+              && solBox.querySelector('pre').textContent.split('\n').length < 30,
+      solBox ? `${solBox.querySelector('pre').textContent.split('\n').length} lines` : '');
+check('a K spec is shown with its real claim text',
+      boxes.some(b => /\.k$/.test(b.querySelector('summary').textContent.trim())
+                   && b.querySelector('pre').textContent.includes('claim')));
 
 console.log('\n4. the BAD example — one byte, everything changes');
 $('#openCat').click(); await sleep(60);

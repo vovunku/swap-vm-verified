@@ -128,6 +128,14 @@
   .note{font-size:12px;color:var(--dim);border-top:1px solid var(--line);
         margin-top:18px;padding-top:15px;line-height:1.65}
   .note b{color:var(--ink);font-weight:620}
+  .srcwrap{border-top:1px solid var(--line);margin-top:18px;padding-top:15px}
+  .srchdr{font-size:12px;color:var(--dim);margin-bottom:8px;line-height:1.6}
+  .srcbox{border:1px solid var(--line);border-radius:7px;margin-bottom:7px;overflow:hidden}
+  .srcbox>summary{padding:9px 12px;font-size:12px;color:var(--acc);
+                  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .srcbox[open]>summary{border-bottom:1px solid var(--line)}
+  .srcbox pre{margin:0;padding:12px;overflow-x:auto;font-size:11.5px;line-height:1.5;
+              white-space:pre;background:var(--panel2,rgba(127,127,127,.07))}
 </style>
 </head>
 <body>
@@ -353,11 +361,35 @@ async function verify(){
     const cls = l.level==='error'?'err':l.level==='warn'?'warn':'info';
     html += verdictBlock(cls, l.level.toUpperCase(), `at pc ${l.pc}`, l.text, l.why, null, l.source);
   }
+  html += sourcesBlock(r.sources);
   html += `<div class="note"><b>What was not checked.</b> ${esc(r.coverage.plain)}
      Nothing here executed your program on a chain.<br><br>
      <b>Why two of our checks are designed to fail.</b>
      ${r.controls.map(c=>esc(c.plain)).join(' ')}</div>`;
   $('#results').innerHTML = html;
+}
+
+/* The Solidity each instruction dispatches to, and the K specs that constrain it. Shown
+   because "the spec says so" is not a claim anyone should have to take on trust — and the
+   Solidity is per-FUNCTION, from the real dispatch table, not a whole file to hunt through. */
+function sourcesBlock(sources){
+  if(!sources) return '';
+  const keys = Object.keys(sources);
+  if(!keys.length) return '';
+  const one = k => {
+    const s = sources[k];
+    const head = s.kind==='solidity' ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}` : s.path;
+    return `<details class="srcbox"><summary>${esc(head)}</summary>
+      <pre class="mono">${esc(s.text)}</pre></details>`;
+  };
+  const sol = keys.filter(k=>sources[k].kind==='solidity');
+  const ks  = keys.filter(k=>sources[k].kind==='k');
+  return `<div class="srcwrap">
+    ${sol.length?`<div class="srchdr">The Solidity your program dispatches to — from
+      <span class="mono">src/opcodes/Opcodes.sol</span>, the table the VM really branches
+      on</div>${sol.map(one).join('')}`:''}
+    ${ks.length?`<div class="srchdr" style="margin-top:14px">The specifications — where the
+      wording above actually comes from</div>${ks.map(one).join('')}`:''}</div>`;
 }
 
 /* ---------- wiring ---------- */
