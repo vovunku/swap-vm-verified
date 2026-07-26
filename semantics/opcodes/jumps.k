@@ -105,4 +105,34 @@ module SWAPVM-JUMPS
   rule <k> #exec ( 49 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
     requires lengthBytes(ARGS) =/=Int 22
 
+  // 0x32 JumpIfTokenOut — Controls.sol:117-127.
+  //
+  // args = 20 bytes token + 2 bytes nextPC (uint16 BE).
+  // Jump iff address(bytes20(args)) == ctx.query.tokenOut.
+  //
+  // Solidity: `address token = address(bytes20(args)); if (token == ctx.query.tokenOut)
+  // { uint256 nextPC = uint16(bytes2(args.slice(20))); ctx.setNextPC(nextPC); }`.
+  //
+  // Structurally identical to 0x31 above, reading <tokenOut> instead of <tokenIn>. Same
+  // arm-selection note applies: the jump arm uses a `TOUT ==Int ...` side condition (the LHS
+  // cell-pattern form was rejected by kompile for hooked-function-in-LHS, same as 0x31).
+
+  // Branch taken — token prefix of ARGS equals tokenOut; overwrite <pc>.
+  rule <k> #exec ( 50 , ARGS ) => .K ... </k>
+       <pc> _ => Bytes2Int(substrBytes(ARGS, 20, 22), BE, Unsigned) </pc>
+       <tokenOut> TOUT </tokenOut>
+       <status> Running </status>
+    requires lengthBytes(ARGS) ==Int 22
+     andBool TOUT ==Int Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
+
+  // Branch not taken — no-op, <pc> keeps its decode-advanced value.
+  rule <k> #exec ( 50 , ARGS ) => .K ... </k>
+       <tokenOut> TOUT </tokenOut>
+       <status> Running </status>
+    requires lengthBytes(ARGS) ==Int 22
+     andBool TOUT =/=Int Bytes2Int(substrBytes(ARGS, 0, 20), BE, Unsigned)
+
+  // Non-canonical args — revert loudly.
+  rule <k> #exec ( 50 , ARGS ) => #revert("UNMODELLED-ARGS-LENGTH") ... </k>
+    requires lengthBytes(ARGS) =/=Int 22
 endmodule
