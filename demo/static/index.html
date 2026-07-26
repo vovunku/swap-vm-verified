@@ -136,6 +136,16 @@
   .srcbox[open]>summary{border-bottom:1px solid var(--line)}
   .srcbox pre{margin:0;padding:12px;overflow-x:auto;font-size:11.5px;line-height:1.5;
               white-space:pre;background:var(--panel2,rgba(127,127,127,.07))}
+  .about{padding:10px 12px;border-bottom:1px solid var(--line);font-size:12px}
+  .dimmono{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--dim)}
+  .natspec{margin-top:7px;color:var(--dim);font-size:12px;line-height:1.6;
+           white-space:pre-wrap;max-height:220px;overflow-y:auto}
+  .lead{padding:9px 12px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--line)}
+  .innerbox{border-top:1px solid var(--line)}
+  .innerbox>summary{padding:8px 12px;font-size:11.5px;color:var(--dim);
+                    font-family:ui-monospace,Menlo,monospace}
+  .innerbox[open]>summary{border-bottom:1px solid var(--line)}
+  .innerbox pre{max-height:480px;overflow-y:auto}
 </style>
 </head>
 <body>
@@ -154,7 +164,8 @@
     <span class="spacer"></span><button class="ghost" id="closeCat">✕</button></header>
   <div class="body">
     <h3>Start here</h3><div id="catCurated"></div>
-    <h3>Conformance suite · verified on both engines</h3><div id="catRest"></div>
+    <h3 id="catRestHdr" hidden>Conformance suite · verified on both engines</h3>
+    <div id="catRest"></div>
   </div>
 </aside>
 
@@ -202,7 +213,11 @@ function card(e){
 }
 function paintCatalogue(){
   $('#catCurated').innerHTML = BOOT.examples.filter(e=>e.kind).map(card).join('');
-  $('#catRest').innerHTML    = BOOT.examples.filter(e=>!e.kind).map(card).join('');
+  const rest = BOOT.examples.filter(e=>!e.kind);
+  $('#catRest').innerHTML    = rest.map(card).join('');
+  // Heading only if there is something under it. server.catalogue() currently returns
+  // nothing, so this section is empty by design rather than by accident.
+  $('#catRestHdr').hidden = rest.length === 0;
 }
 
 /* ---------- blocks ---------- */
@@ -376,11 +391,25 @@ function sourcesBlock(sources){
   if(!sources) return '';
   const keys = Object.keys(sources);
   if(!keys.length) return '';
+  /* What the contract IS, then the code that matters, then the whole file — in that order,
+     because a reader should meet the declaration and the specific function before being
+     handed 180 lines, and should still be able to get the 180 lines. */
   const one = k => {
     const s = sources[k];
-    const head = s.kind==='solidity' ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}` : s.path;
-    return `<details class="srcbox"><summary>${esc(head)}</summary>
-      <pre class="mono">${esc(s.text)}</pre></details>`;
+    const head = s.kind==='solidity'
+      ? (s.fn ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}` : s.path) : s.path;
+    const c = s.contract || {};
+    const about = c.name ? `<div class="about"><b class="mono">${esc(c.kind)} ${esc(c.name)}</b>${
+      c.handles && c.handles.length ? ` · also handles ${c.handles.length} opcode${
+        c.handles.length===1?'':'s'}: <span class="dimmono">${esc(c.handles.join(', '))}</span>`:''}${
+      c.doc ? `<div class="natspec">${esc(c.doc)}</div>`:''}</div>` : '';
+    const full = (s.full && s.full !== s.text) ? `<details class="innerbox">
+      <summary>the whole file — ${s.full_lines} lines</summary>
+      <pre class="mono">${esc(s.full)}</pre></details>` : '';
+    return `<details class="srcbox"><summary>${esc(head)}</summary>${about}${
+      s.kind==='k' && s.focused ? '<div class="lead">The claim — this is the invariant, '+
+      'stated. Everything else in the file is imports and module setup.</div>':''
+    }<pre class="mono">${esc(s.text)}</pre>${full}</details>`;
   };
   const sol = keys.filter(k=>sources[k].kind==='solidity');
   const ks  = keys.filter(k=>sources[k].kind==='k');

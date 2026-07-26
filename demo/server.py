@@ -214,18 +214,22 @@ EXAMPLE_NOTES = {
 # their real job -- but they are not worth a slot in a catalogue a person reads.
 #
 # The measure is: does clicking it show something the other entries do not?
-HIDDEN = {
-    'catalogue':       'byte-identical to the "Permissioned swap" entry above it',
-    'gateRejects':     'the gate toggle on "Permissioned swap" already shows exactly this',
-    'revRecompute':    'byte-identical to "Reversed token order"; it differs only in the K '
-                       'configuration (amountOut preset), which this catalogue does not vary',
-    'revRecomputeOut': 'byte-identical to "Reversed token order", same reason',
-}
-
-
 def catalogue() -> list:
-    """The conformance examples worth showing, each for a stated reason."""
-    return [e for e in EXAMPLES if e.get('bytes') and e['label'] not in HIDDEN]
+    """No conformance examples on the page. Deliberately empty, not accidentally.
+
+    They remain in `examples.json` and `selftest.py` still checks the K model's prediction
+    against every one of them on each run -- that is the job they were written for. What
+    they were NOT earning was a slot in a catalogue a person reads: two pairs were
+    byte-identical to entries above them, one duplicated the gate toggle, and the rest were
+    concrete witnesses for properties the pricing theorems already cover symbolically.
+
+    ONE THING IS LOST BY THIS. Three of them (`loneOpcode`, `argsOverrun`, `zeroArg`) were
+    the visible cases where the K model no-ops and production reverts -- the honest limit of
+    the approach, since an L2 theorem proved about such a program says nothing about the
+    deployed VM. That claim now lives only in `semantics/swapvm.md` and `axioms.md`, not on
+    the page. Worth knowing when someone asks the page what it does not cover.
+    """
+    return []
 
 
 def curated() -> list:
@@ -441,6 +445,47 @@ def _extract_fn(path: pathlib.Path, fn: str) -> str | None:
     return '\n'.join(lines[head:end + 1])
 
 
+def _contract_doc(path: pathlib.Path, fn: str | None = None) -> dict:
+    """What the file IS: its declaration, its own natspec, and what else it handles.
+
+    Upstream's instruction files carry only a licence header -- no @title, no @notice -- so
+    a description lifted from natspec alone would be blank for most of them. The dispatch
+    table fills that in with something better than prose anyway: the full list of opcodes
+    that route into this file. That is derived, checkable, and tells you the thing you
+    actually want to know, which is what else is in here.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    decls = [(i, *m.groups()) for i, l in enumerate(lines)
+             if (m := re.match(r'\s*(?:abstract\s+)?(contract|library|interface)\s+(\w+)', l))]
+    if not decls:
+        return {}
+    # Pick the declaration that actually owns this code, not the first in the file. These
+    # files routinely open with an `XArgsBuilder` helper library or an interface, so taking
+    # decls[0] names the wrong thing -- Controls.sol would read as "ControlsArgsBuilder".
+    if fn:
+        at = next((i for i, l in enumerate(lines)
+                   if re.match(rf'\s*function\s+{re.escape(fn)}\s*\(', l)), None)
+        chosen = max((d for d in decls if at is None or d[0] < at),
+                     key=lambda d: d[0], default=decls[0])
+    else:
+        stem = path.stem
+        chosen = next((d for d in decls if d[2] == stem), decls[-1])
+    i, kind, name = chosen
+    head = i
+    while head > 0 and re.match(r'\s*(///|\*|/\*)', lines[head - 1]):
+        head -= 1
+    natspec = [re.sub(r'^\s*(///|\*/?)\s?', '', l).rstrip() for l in lines[head:i]]
+    natspec = [l for l in natspec if not l.startswith('@custom:')]
+    rel = str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else path.name
+    handles = sorted(op for op, (p, _) in DISPATCH.items() if p == rel)
+    return {'kind': kind, 'name': name,
+            'doc': '\n'.join(natspec).strip(),
+            'handles': handles}
+
+
 def sources_for(steps: list, applicable: list, proof: dict | None = None) -> dict:
     """Every artefact behind one program: the Solidity each instruction dispatches to, and
     the K specs that constrain it. Keyed by repo-relative path so the page can label them."""
@@ -452,14 +497,39 @@ def sources_for(steps: list, applicable: list, proof: dict | None = None) -> dic
         rel, fn = DISPATCH[name]
         body = _extract_fn(ROOT / rel, fn)
         if body:
+            whole = (ROOT / rel).read_text()
             out[f'{rel}::{fn}'] = {'kind': 'solidity', 'path': rel, 'fn': fn,
-                                   'opcode': s.get('op'), 'text': body}
+                                   'opcode': s.get('op'), 'text': body,
+                                   'full': whole, 'full_lines': whole.count('\n') + 1,
+                                   'contract': _contract_doc(ROOT / rel, fn)}
+
+    # The contracts DustProof itself is, as opposed to the instructions it composes. They
+    # are not reachable from the dispatch table -- no opcode routes to them -- so without
+    # this the page shows the program and the specs but never the product's own code.
+    if [(s.get('op'), s.get('argsLen')) for s in steps if not s.get('error')] == \
+            [('23', 20), ('20', 5), ('50', 0), ('02', 8)]:
+        for rel in ('contracts/DustOrderBuilder.sol', 'contracts/DustSweeper.sol'):
+            p = ROOT.parent / 'dustproof' / rel
+            if p.exists():
+                out[f'dustproof/{rel}'] = {
+                    'kind': 'solidity', 'path': f'dustproof/{rel}', 'fn': None,
+                    'opcode': None, 'text': p.read_text(),
+                    'contract': _contract_doc(p)}
 
     def add_spec(rel):
         for base in (ROOT, ROOT.parent / 'dustproof', ROOT / 'semantics'):
             p = (base / rel)
             if p.exists() and p.is_file():
-                out[rel] = {'kind': 'k', 'path': rel, 'text': p.read_text()}
+                whole = p.read_text()
+                # The claim block is the invariant; everything else is imports and setup.
+                # Lead with the claim and keep the file behind a second expander, for the
+                # same reason the Solidity leads with the function: a reader should meet the
+                # statement being proved, not hunt for it.
+                m = re.search(r'(?ms)^\s*claim\b.*?(?=^\s*(?:claim|endmodule)\b)', whole)
+                out[rel] = {'kind': 'k', 'path': rel,
+                            'text': (m.group(0).strip() if m else whole),
+                            'full': whole, 'full_lines': whole.count('\n') + 1,
+                            'focused': bool(m)}
                 return
 
     for a in applicable:

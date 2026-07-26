@@ -82,10 +82,8 @@ def main() -> int:
     curated = server.curated()
     others = [e for e in server.catalogue() if e['label'] not in {c['label'] for c in curated}]
     examples = [bake_example(e) for e in curated + others]
-    if server.HIDDEN:
-        print('  omitted, each for a reason:')
-        for k, why in server.HIDDEN.items():
-            print(f'    {k:18s} {why}')
+    print(f'  {len(server.EXAMPLES)} conformance examples omitted from the page by '
+          f'server.catalogue(); selftest.py still checks the K model against all of them')
 
     payload = {
         'examples': examples,
@@ -187,7 +185,22 @@ details ul{margin:7px 0 0 0;padding-left:19px;font-size:13px;color:var(--dim)}
 .srcbox[open]>summary::before{content:"▾ "}
 .srcbox[open]>summary{border-bottom:1px solid var(--line)}
 .srcbox pre{margin:0;padding:13px;overflow-x:auto;font-size:12px;line-height:1.5;
-  background:var(--panel2);border-radius:0 0 6px 6px;white-space:pre}
+  background:var(--panel2);white-space:pre}
+.srcbody{padding:0}
+.about{padding:11px 13px;border-bottom:1px solid var(--line);font-size:12.5px}
+.about b{font-size:12.5px}
+.dimmono{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--dim)}
+.natspec{margin-top:8px;color:var(--dim);font-size:12.5px;line-height:1.6;
+  white-space:pre-wrap;max-height:230px;overflow-y:auto}
+.lead{padding:10px 13px;font-size:12.5px;color:var(--dim);border-bottom:1px solid var(--line)}
+.innerbox{border-top:1px solid var(--line)}
+.innerbox>summary{padding:9px 13px;font-size:12px;color:var(--dim);
+  font-family:ui-monospace,monospace;list-style:none}
+.innerbox>summary::-webkit-details-marker{display:none}
+.innerbox>summary::before{content:"▸ "}
+.innerbox[open]>summary::before{content:"▾ "}
+.innerbox[open]>summary{border-bottom:1px solid var(--line)}
+.innerbox pre{max-height:520px;overflow-y:auto}
 footer{padding:20px 30px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px;
   background:var(--panel)}
 footer code{background:var(--panel2);padding:1px 5px;border-radius:4px}
@@ -296,18 +309,35 @@ function renderExec(e){
   return bar + body;
 }
 
+/* One source box: what the contract IS, then the code that matters, then the whole file.
+   In that order deliberately — a reader should meet the declaration and the specific
+   function before being handed 180 lines, and should still be able to get the 180 lines. */
+function srcBox(s){
+  const head = s.kind==='solidity'
+    ? (s.fn ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}` : s.path)
+    : s.path;
+  const c = s.contract || {};
+  const about = c.name ? `<div class="about">
+      <b class="mono">${esc(c.kind)} ${esc(c.name)}</b>
+      ${c.handles && c.handles.length ? ` · also handles ${c.handles.length} opcode${
+         c.handles.length===1?'':'s'}: <span class="dimmono">${esc(c.handles.join(', '))}</span>` : ''}
+      ${c.doc ? `<div class="natspec">${esc(c.doc)}</div>` : ''}
+    </div>` : '';
+  const full = (s.full && s.full !== s.text) ? `<details class="innerbox">
+      <summary>the whole file — ${s.full_lines} lines</summary>
+      <pre class="mono">${esc(s.full)}</pre></details>` : '';
+  return `<details class="srcbox"><summary>${esc(head)}</summary>
+    <div class="srcbody">${about}
+      ${s.kind==='k' && s.focused ? '<div class="lead">The claim — this is the invariant, '+
+        'stated. Everything else in the file is imports and module setup.</div>' : ''}
+      <pre class="mono">${esc(s.text)}</pre>${full}</div></details>`;
+}
+
 function renderSources(e){
   const S = e.sources || {};
   const keys = Object.keys(S);
   if(!keys.length) return '';
-  const one = k => {
-    const s = S[k];
-    const head = s.kind==='solidity'
-      ? `${s.path} — ${s.fn}()  ·  opcode 0x${s.opcode}`
-      : `${s.path}`;
-    return `<details class="srcbox"><summary>${esc(head)}</summary>
-      <pre class="mono">${esc(s.text)}</pre></details>`;
-  };
+  const one = k => srcBox(S[k]);
   const sol = keys.filter(k => S[k].kind==='solidity');
   const ks  = keys.filter(k => S[k].kind==='k');
   return `<section><h4>Read the sources</h4>

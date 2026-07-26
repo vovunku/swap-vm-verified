@@ -40,12 +40,13 @@ check('opens on ☰ Examples', $('#drawer').classList.contains('open'));
 check('scrim shown', $('#scrim').classList.contains('open'));
 check('curated cards present (GOOD, BAD, DustProof)', $$('#catCurated .card').length === 3,
       `${$$('#catCurated .card').length} curated`);
-// Six, not eleven. The other five were culled because clicking them showed nothing the
-// remaining entries do not -- two pairs were byte-identical and one duplicated the gate
-// toggle. They still live in examples.json, where selftest.py checks the K model against
-// every one of them; that is their job, not filling a drawer a person reads.
-check('6 conformance cards present', $$('#catRest .card').length === 6,
+// None. The conformance examples still live in examples.json and selftest.py still checks
+// the K model against every one of them -- that is the job they were written for -- but
+// they were not earning a slot in a drawer a person reads. Empty by design, so the heading
+// must be hidden too rather than left dangling over nothing.
+check('no conformance cards', $$('#catRest .card').length === 0,
       `${$$('#catRest .card').length} conformance`);
+check('and its heading is hidden', $('#catRestHdr').hidden);
 $('#scrim').click(); await sleep(60);
 check('closes on scrim click', !$('#drawer').classList.contains('open'));
 
@@ -58,11 +59,18 @@ check('assumptions are exposed', $$('#results details').length >= 1,
 check('"what was not checked" note present', /What was not checked/i.test(res));
 
 // The sources, so "the spec says so" is checkable in place rather than taken on trust.
+const res2 = () => $('#results').innerHTML;
 const boxes = $$('#results .srcbox');
 check('Solidity and K sources are expandable', boxes.length >= 5, `${boxes.length} boxes`);
 check('they start collapsed', boxes.every(b => !b.open));
 const solBox = boxes.find(b => /Controls\.sol/.test(b.querySelector('summary').textContent));
 check('the gate instruction\'s Solidity is shown', !!solBox);
+check('it says what the contract is, and what else it handles',
+      /contract Controls/.test(res2()) && /also handles \d+ opcodes/.test(res2()));
+check('the whole file is a second, collapsed expander',
+      $$('#results .innerbox').length >= 3
+      && $$('#results .innerbox').every(b => !b.open),
+      `${$$('#results .innerbox').length} whole-file expanders`);
 check('it is the function, not the whole file',
       !!solBox && /require\(balance > 0/.test(solBox.querySelector('pre').textContent)
               && solBox.querySelector('pre').textContent.split('\n').length < 30,

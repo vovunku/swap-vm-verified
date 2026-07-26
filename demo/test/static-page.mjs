@@ -116,19 +116,33 @@ ok(boxes.every(b => /^(src|semantics|\.\.\/dustproof)\//.test(
      b.querySelector('summary').textContent.trim())),
    'every source is labelled with its repo path');
 
-console.log('\n8. model vs VM is stated, including where it diverges');
-const withModel = DATA.examples.filter(e => e.expect);
-ok(withModel.length > 0, 'conformance entries carry the K model prediction',
-   `${withModel.length} of ${DATA.examples.length}`);
-let sawDiverge = false;
-for (let i = 0; i < items.length; i++) {
-  $$('.item')[i].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-  if (/DIVERGE/.test($('#main').innerHTML)) sawDiverge = true;
-}
-ok(sawDiverge, 'at least one program is shown where the model and the VM disagree',
-   'the malformed-program cases — the honest weak spot, not hidden');
+console.log('\n8. the catalogue is only the three programs that carry a proof');
+ok(DATA.examples.length === 3, 'exactly three programs', `${DATA.examples.length}`);
+ok(DATA.examples.every(e => e.kind === 'good' || e.kind === 'bad'),
+   'no conformance entries remain');
+// They still exist and are still checked -- just not on this page. If that ever stops being
+// true, the page is claiming coverage the repo no longer has.
+ok(DATA.examples.filter(e => e.proof).length >= 2,
+   'at least two carry a real recorded proof pair',
+   `${DATA.examples.filter(e => e.proof).length} with proofs`);
 
-console.log('\n9. nothing is editable');
+console.log('\n9. the contract description and whole-file source are both reachable');
+$$('.item')[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+const abouts = $$('.srcbox .about');
+ok(abouts.length >= 3, 'each Solidity source says what the contract is', `${abouts.length}`);
+ok(/contract Controls/.test($('#main').innerHTML),
+   'it names the owning contract, not the first declaration in the file');
+ok(/also handles \d+ opcodes/.test($('#main').innerHTML),
+   'and what else that contract handles — derived from the dispatch table');
+const inner = $$('.innerbox');
+ok(inner.length >= 3, 'the whole file is a second expander', `${inner.length}`);
+ok(inner.every(b => !b.open), 'it starts collapsed, under the focused excerpt');
+ok(/the whole file — \d+ lines/.test($('#main').innerHTML), 'it says how long the file is');
+const kb = $$('.srcbox').find(b => /\.k$/.test(b.querySelector('summary').textContent.trim()));
+ok(!!kb && /this is the invariant/.test(kb.textContent),
+   'the K spec leads with the claim and labels it as the invariant');
+
+console.log('\n10. nothing is editable');
 ok($$('input, textarea, select').length === 0, 'no inputs on the page',
    `${$$('input, textarea, select').length} found`);
 ok($$('[contenteditable]').length === 0, 'nothing contenteditable');
