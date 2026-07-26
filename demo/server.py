@@ -25,6 +25,7 @@ shipping none.
 """
 import json
 import os
+import subprocess
 import pathlib
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -276,6 +277,63 @@ def proved(steps: list) -> list:
     return results
 
 
+# Error selectors, so a revert shows a name rather than four hex bytes.
+SELECTORS = {
+    '9669f955': 'TakerTokenBalanceIsZero(address taker, address token)',
+    'e2f4e5b1': 'SetBalancesExpectZeroBalances',
+    '2a1b2dd8': 'LimitSwapRequiresBothBalancesNonZero',
+    '4b9d78b6': 'LimitSwapDirectionMismatch',
+    '9d4e2b04': 'LimitSwapRecomputeDetected',
+}
+
+EXEC_WORKSPACE = os.environ.get('DEMO_EXEC_WS', '/home/user/fee-work')
+EXEC_CONTAINER = os.environ.get('DEMO_EXEC_CONTAINER', 'kontrol')
+
+
+def execute(hexstr: str, cfg: dict) -> dict:
+    """EXECUTED tier: run the composed program through the real ContextLib.runLoop.
+
+    Inputs go in by environment variable so the test contract never changes and Foundry
+    does not recompile between runs (~48 s vs ~1 ms). Returns the real registers, or the
+    real revert data -- not a simulation of either.
+    """
+    env = {
+        'DEMO_PROGRAM': '0x' + hexstr,
+        'DEMO_GATE_BALANCE': str(cfg.get('gateBalance', 0)),
+        'DEMO_AMOUNT_IN': str(cfg.get('amountIn', 10**18)),
+        'DEMO_AMOUNT_OUT': str(cfg.get('amountOut', 0)),
+        'DEMO_EXACT_IN': 'true' if cfg.get('isExactIn', True) else 'false',
+    }
+    cmd = ['docker', 'exec', '-u', 'user']
+    for k, v in env.items():
+        cmd += ['-e', f'{k}={v}']
+    cmd += [EXEC_CONTAINER, 'bash', '-c',
+            f'cd {EXEC_WORKSPACE} && PATH=/home/user/.foundry/bin:/usr/bin:/bin '
+            f'FOUNDRY_PROFILE=default forge test --match-path "test/demo/DemoRun.t.sol" -vv']
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180).stdout
+    except Exception as e:
+        return {'available': False, 'error': str(e)}
+
+    res = {'available': True, 'raw': []}
+    for line in out.splitlines():
+        t = line.strip()
+        for key in ('balanceIn', 'balanceOut', 'amountIn', 'amountOut', 'nextPC', 'GATE'):
+            if t.startswith(key + ' '):
+                res[key] = t.split(None, 1)[1]
+        if t == 'OK':
+            res['status'] = 'completed'
+        if t == 'REVERT':
+            res['status'] = 'reverted'
+        if t.startswith('0x') and res.get('status') == 'reverted' and 'selector' not in res:
+            res['selector'] = t[2:10]
+            res['error'] = SELECTORS.get(t[2:10], f'unknown selector 0x{t[2:10]}')
+    if 'status' not in res:
+        res['available'] = False
+        res['error'] = 'the executed tier is unavailable (container or workspace not reachable)'
+    return res
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload, ctype='application/json'):
         body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -319,6 +377,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/disassemble':
             blocks, unsupported = disassemble(req.get('hex', ''))
             return self._send(200, {'blocks': blocks, 'unsupported': unsupported})
+        if self.path == '/api/execute':
+            hexstr = req.get('hex') or assemble(req.get('blocks', []))[0]
+            return self._send(200, execute(hexstr, req.get('config', {})))
         if self.path == '/api/verify':
             hexstr = req.get('hex')
             if hexstr is None:

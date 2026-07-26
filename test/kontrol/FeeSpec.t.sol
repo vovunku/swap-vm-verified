@@ -76,6 +76,31 @@ import { FeeHarness, MockProtocolFeeProvider } from "./harnesses/FeeHarness.sol"
 ///      `test_diff_exactOut_stubbedMatchesPreseeded` establishes that pre-seeding the register
 ///      the tail program would have written agrees with running a real dispatcher. Read
 ///      `FeeHarness`'s docstring before trusting anything here.
+///
+///      ## Proof status of this file, as run
+///
+///      35 properties, one `kontrol prove` invocation each, `--workers 2`, checkpointed
+///      profile plus `--fallback-on Aborted`, `--schedule CANCUN`, `run-constructor = false`:
+///
+///        * **33 PASSED** — verdict read from Kontrol's printed `PROOF PASSED`, not from leaf
+///          inspection of `proof.json`. Node counts and times are on each property below where
+///          they are interesting; the whole set ran in 1h 55m and the slowest was
+///          `test_feeIn_exactIn_isExactlyTwoFlooredDivisions` at 9m 29s / 321 nodes.
+///        * **1 REFUTED, deliberately** — `test_feeIn_exactIn_reconstructionNeverExceedsThePrincipal`.
+///          The counterexample is a result, not a failure; see that property.
+///        * **1 NOT CLOSED** — `test_flatFeeIn_exactOut_isExactlyTheCeiling`. A prover
+///          limitation, NOT a refutation; see that property.
+///
+///      Reading a `NOT CLOSED` as a refutation is the specific misreading these annotations
+///      exist to prevent, so every property that did not pass carries a `kontrol-status`
+///      NatSpec tag saying which of the two it is.
+///
+///      **One caveat on provenance.** After the proof run, comment text in this file was
+///      corrected — the impact analysis on the exact-in overshoot originally described it as an
+///      overcharge, which was wrong (`TakerTraits.validate` converts it into a revert). No
+///      assertion, assumption, parameter type or signature changed, so every verdict above is a
+///      verdict about the theorems as they now read. A re-run will mint version `:1` because
+///      solc metadata tracks comments.
 contract FeeSpec is Test {
     FeeHarness internal harness;
     MockProtocolFeeProvider internal provider;
@@ -441,10 +466,14 @@ contract FeeSpec is Test {
     /// @notice Splitting an exact-in fill in two never yields *less* net output, and never
     ///         yields more than one wei more.
     ///
-    /// @dev Property 7 of the brief. `test/FeeOutAdditivityViolation.t.sol` already documents
-    ///      by sampling that `feeOut` violates additivity and that splitting can be profitable.
-    ///      This upgrades the arithmetic half of that result from sampled to proven, and — more
-    ///      usefully — **bounds the magnitude**.
+    /// @dev **The finding here is NOT new and must not be reported as such.** That `feeOut`
+    ///      violates additivity, and that splitting a swap can be profitable, is established:
+    ///      `test/FeeOutAdditivityViolation.t.sol` demonstrates it by sampling, and the
+    ///      Nethermind review covers it (`feeOut` ~90 mentions, `additivity` 3).
+    ///
+    ///      This property contributes two things on top of that, and nothing else: it makes the
+    ///      arithmetic half machine-checked rather than sampled, and — the part that is
+    ///      actually informative — it **bounds the magnitude**.
     ///
     ///      With `net(Y) = Y - (Y*f)\BPS`, the discrepancy is
     ///
@@ -646,8 +675,31 @@ contract FeeSpec is Test {
     ///      factor is enormous, so a sub-wei discounting error becomes a large absolute
     ///      overcharge — see `test_feeIn_exactIn_overshootIsUnbounded_witness`, where an
     ///      `amountIn` of 1000 is reconstructed as 1_000_000_000.
-    /// @custom:kontrol-status REFUTED — the counterexample is the deliverable. The proven
-    ///      restriction is `test_feeIn_exactIn_overshootIsAtMostOneWei_boundedToHalfBps`.
+    /// @custom:kontrol-status REFUTED — `PROOF FAILED` at node 198 of 185 persisted nodes,
+    ///      5m 1s. This is a genuine refutation, not a timeout. The proven restriction is
+    ///      `test_feeIn_exactIn_overshootIsAtMostOneWei_boundedToHalfBps`.
+    ///
+    ///      **Path condition** (this, not the printed model, is the load-bearing part):
+    ///
+    ///          amountIn =/= 0
+    ///          amountIn  <  (amountIn - amountIn*feeBps/BPS)
+    ///                     + (amountIn - amountIn*feeBps/BPS) * feeBps / (BPS - feeBps)
+    ///
+    ///      i.e. the refutation is exactly "the reconstruction exceeds the principal", with no
+    ///      side condition beyond a non-zero amount. Model: `feeBps = 3`, `amountIn =
+    ///      1_333_333_333`, which reconstructs to `1_333_333_334`.
+    ///
+    ///      **What the refutation means downstream, and it is not what it first looks like.**
+    ///      In the exact-in direction `TakerTraits.validate` (`TakerTraits.sol:181`) runs
+    ///      `require(takerAmount >= amountIn, TakerTraitsTakerAmountInMismatch(...))` on the
+    ///      value `runLoop` returned, where `takerAmount` is the taker's own `amount`
+    ///      (`SwapVM.sol:161`, `:207`). That check is **unconditional** — unlike the
+    ///      `thresholdAmount` checks beside it, it is not gated on `hasThreshold`. So the
+    ///      overshoot never becomes an overcharge; it makes the fill revert. The defect is
+    ///      denial of service, and `test/kontrol/analysis/repro/FeeRepro.t.sol` measures its
+    ///      rate: the fraction of exact-in trade sizes that cannot fill is numerically equal to
+    ///      the fee rate — exactly 30 per 10_000 at a 0.3% fee, 100 per 10_000 at 1%, 500 per
+    ///      1_000 at 50%.
     function test_feeIn_exactIn_reconstructionNeverExceedsThePrincipal(uint32 feeBps, uint128 amountIn) public {
         vm.assume(feeBps < BPS);
 
@@ -669,14 +721,19 @@ contract FeeSpec is Test {
     ///      `1/(1-f)` factor then carries straight into the result. The taker is charged
     ///      1_000_000x what they offered.
     ///
-    ///      **Reachability, stated honestly.** `feeBps` is maker-signed program bytes and the
-    ///      builder's range check does not run on chain, so the parameter is reachable; the
-    ///      register is the taker's own `amount`. What limits the damage is
-    ///      `TakerTraits.validate`, which caps `amountIn` against the taker's threshold — but
-    ///      `BUGS.md` records that the threshold is opt-in and a taker who omits the slice has
-    ///      no cap at all. So this is a real overcharge against an unprotected taker, and a
-    ///      revert against a protected one. Either way the instruction's own arithmetic is what
-    ///      produces it.
+    ///      **Impact, corrected.** An earlier version of this comment called it an overcharge.
+    ///      That was wrong, and the correction matters: in the exact-in direction
+    ///      `TakerTraits.validate` (`TakerTraits.sol:181`) enforces
+    ///      `require(takerAmount >= amountIn)` **unconditionally**, so no fill with an
+    ///      overshooting `amountIn` completes. It is not the opt-in `thresholdAmount` path —
+    ///      that gate (`hasThreshold`) governs the *other* checks in the same function, and
+    ///      `BUGS.md`'s note about opt-in thresholds applies to those, not to this one.
+    ///
+    ///      So the defect is **denial of service**: the order does not fill, the taker loses
+    ///      gas, and no funds move incorrectly. `feeBps` is maker-signed program bytes that the
+    ///      builder's range check never guards on chain, and `amountIn` is the taker's own
+    ///      `amount` (`SwapVM.sol:161`) — neither party chose the failure, which is what
+    ///      distinguishes this from the maker-self-inflicted entries above.
     function test_feeIn_exactIn_overshootIsUnbounded_witness() public {
         (uint256 fee, uint256 finalAmountIn) = harness.feeAmountInExactIn(999_999_999, 1000);
 
@@ -755,6 +812,25 @@ contract FeeSpec is Test {
     ///      Written this way rather than as `(fee - 1) * d < n` so no case split on `fee > 0`
     ///      is needed and no product the instruction never forms appears. `n + d` is safe:
     ///      `n < 2^160` and `d <= BPS`.
+    ///
+    /// @custom:kontrol-status NOT CLOSED — **prover incompleteness, not a refutation.** Timed
+    ///      out at 900 s having reached 198 nodes, with **zero node growth over a 45 s
+    ///      observation window** inside that run, so it was stopped rather than slow. Nothing
+    ///      here is known or suspected to be false; the fuzzer passes it at 256 runs and its
+    ///      floored twin `test_feeIn_exactOut_isExactlyTheFloor` — same symbolic divisor
+    ///      `BPS - feeBps`, same operand widths — PASSED in 3m 1s at 247 nodes.
+    ///
+    ///      That contrast localises the blocker to `Math.ceilDiv` rather than to the divisor or
+    ///      the assertion shape. `ceilDiv` is `SafeCast.toUint(a > 0) * ((a - 1) / b + 1)`: a
+    ///      symbolic division whose quotient is multiplied back by a boolean-derived factor and
+    ///      then, in the assertion, by its own divisor. That is the same term shape recorded in
+    ///      `kontrol.toml` as the cause of the four `XYCSwap` full-width stalls.
+    ///
+    ///      Next moves, in order of expected value, for whoever picks this up: (1) a
+    ///      simplification lemma for `ceilDiv` over a non-zero symbolic divisor — it would also
+    ///      unblock `XYCSwap`'s exact-out leg, so it is worth more than this one property;
+    ///      (2) failing that, a `_boundedTo64Bits` twin, which is likely to close for the same
+    ///      reason the `XYCSwap` twins do. Do NOT delete or weaken the statement above.
     function test_flatFeeIn_exactOut_isExactlyTheCeiling(uint32 feeBps, uint128 swapAmountIn) public {
         vm.assume(feeBps < BPS);
 

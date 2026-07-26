@@ -87,12 +87,19 @@ import { FeeExperimental } from "../../../../src/instructions/FeeExperimental.so
 ///          feeBps  = 3          i.e. 0.0000003%
 ///          amountIn = 1_333_333_333
 ///
-///      Path condition: `amountIn =/= 0` and `amountIn < a + fee`. The tests below show this is
-///      not a knife edge — a fixed dust-scale fee rate breaks a dense set of trade sizes.
+///      Path condition: `amountIn =/= 0` and `amountIn < a + fee`.
+///
+///      **How often.** `test_repro_exactInOvershootDensitySweep` derives and then measures it:
+///      the overshoot occurs for about `feeBps/BPS` of trade sizes — a fraction numerically
+///      equal to the fee rate. At an ordinary 0.3% fee that is roughly three exact-in fills in
+///      a thousand reverting; at 50% it is roughly half. At the counterexample's `feeBps = 3`
+///      it is about three in a billion, so that particular value is a rare witness rather than
+///      a representative one.
 ///
 ///      * **Reachability.** Ordinary. `feeBps` is a normal small protocol fee; `amountIn` is
 ///        the taker's own trade size, unconstrained by anything before `runLoop`
-///        (`SwapVM.sol:161`).
+///        (`SwapVM.sol:161`). No unusual configuration is required — only a fee rate high
+///        enough for the failure rate to be noticeable, which every real fee is.
 ///      * **Impact.** Denial of service on an otherwise-valid fill. **No funds move
 ///        incorrectly** — the guard catches it. This is deliberately stated as DoS and not as
 ///        an overcharge; an earlier reading of it as "the taker is charged 1e6x" was wrong,
@@ -270,26 +277,70 @@ contract FeeRepro is Test, FeeExperimental {
         assertEq(finalAmountIn / 1000, 1_000_000, "a factor of exactly one million");
     }
 
-    /// @notice The overshoot is not a knife edge: at a fixed dust-scale fee rate a dense set of
-    ///         ordinary trade sizes is unfillable.
-    /// @dev Sweeps 4001 consecutive amounts around the counterexample and counts how many
-    ///      reconstruct above the taker's offer. Reported with `-vv`. The point of the count is
-    ///      that a maker cannot avoid this by "not using weird numbers" — the failures are
-    ///      interleaved with the successes at one-wei spacing.
-    function test_repro_exactInOvershootDensitySweep() public {
-        uint32 feeBps = 3;
+    /// @notice How often the overshoot happens: the fraction of trade sizes that cannot fill is
+    ///         approximately the fee rate itself.
+    ///
+    /// @dev This is the number that decides how much the defect matters, and it is worth
+    ///      deriving rather than just measuring, because the measurement alone is easy to
+    ///      misread.
+    ///
+    ///      Write `A*f = BPS*q + s` with `0 <= s < BPS`, so the discount is `q` and
+    ///      `a = A - q`. Then the exact reconstruction total is
+    ///
+    ///          a * BPS/(BPS-f)  =  A + s/(BPS-f)
+    ///
+    ///      so the instruction overshoots `A` exactly when `s` is within `f` of `BPS` — that is
+    ///      for `f` of the `BPS` possible residues. **The overshoot rate in `A` is therefore
+    ///      about `feeBps/BPS`: numerically equal to the fee rate.**
+    ///
+    ///      At a 0.3% fee roughly three exact-in fills in a thousand revert; at 50% roughly
+    ///      half do. At the counterexample's `feeBps = 3` it is about three in a billion, which
+    ///      is why the first sweep below finds only the one point it was centred on — that
+    ///      value is rare, not representative, and quoting it alone would understate the defect
+    ///      by six orders of magnitude.
+    ///
+    ///      Sweeps 10_000 consecutive amounts at three rates. The two realistic rates come out
+    ///      at **exactly** the predicted counts, which is the strongest form this evidence can
+    ///      take: the failure rate is not merely correlated with the fee, it equals it.
+    function test_repro_exactInOvershootRateEqualsTheFeeRate() public {
+        uint32[3] memory rates = [uint32(3), 3_000_000, 10_000_000];
         uint256 base = 1_333_333_000;
+        uint256 window = 10_000;
+        uint256[3] memory counts;
+
+        for (uint256 r = 0; r < rates.length; ++r) {
+            uint256 overshoots;
+            for (uint256 i = 0; i < window; ++i) {
+                (, uint256 finalAmountIn) = feeInExactIn(base + i, rates[r]);
+                if (finalAmountIn > base + i) ++overshoots;
+            }
+            counts[r] = overshoots;
+            emit log_named_uint("feeBps", rates[r]);
+            emit log_named_uint("  unfillable amounts per 10000", overshoots);
+        }
+
+        // 0.3% of 10_000 is 30. Measured: 30.
+        assertEq(counts[1], 30, "a 0.3% fee makes exactly 0.3% of exact-in trade sizes unfillable");
+        // 1% of 10_000 is 100. Measured: 100.
+        assertEq(counts[2], 100, "a 1% fee makes exactly 1% of them unfillable");
+    }
+
+    /// @notice At a 50% fee the failure rate is 50% — half of all trade sizes cannot fill.
+    /// @dev Separate test with a smaller window purely because the sweep allocates a fresh
+    ///      `Context` per call and a single test cannot afford four full windows of memory
+    ///      expansion. The rate is the same law as above, evaluated at the other end.
+    function test_repro_exactInOvershootAtHalfFeeBreaksHalfOfAllSizes() public {
+        uint256 base = 1_333_333_000;
+        uint256 window = 1_000;
         uint256 overshoots;
 
-        for (uint256 i = 0; i < 4001; ++i) {
-            (, uint256 finalAmountIn) = feeInExactIn(base + i, feeBps);
+        for (uint256 i = 0; i < window; ++i) {
+            (, uint256 finalAmountIn) = feeInExactIn(base + i, BPS / 2);
             if (finalAmountIn > base + i) ++overshoots;
         }
 
-        emit log_named_uint("amounts swept", 4001);
-        emit log_named_uint("amounts whose fill TakerTraits.validate would reject", overshoots);
-
-        assertGt(overshoots, 0, "the overshoot must be reachable at an ordinary fee rate");
+        emit log_named_uint("feeBps = BPS/2, unfillable amounts per 1000", overshoots);
+        assertEq(overshoots, 500, "a 50% fee makes exactly half of all trade sizes unfillable");
     }
 
     // -----------------------------------------------------------------------
@@ -303,12 +354,13 @@ contract FeeRepro is Test, FeeExperimental {
     ///      amount handed to the tail, which is the opposite of what makes the floored version
     ///      overshoot.
     function test_repro_flatFeeInDoesNotOvershootWhereProtocolFeeInDoes() public {
-        uint32 feeBps = 3;
+        uint32 feeBps = 3_000_000; // 0.3% — an ordinary protocol fee, not a contrived one
         uint256 base = 1_333_333_000;
+        uint256 window = 5_000;
         uint256 flatOvershoots;
         uint256 protocolOvershoots;
 
-        for (uint256 i = 0; i < 2001; ++i) {
+        for (uint256 i = 0; i < window; ++i) {
             uint256 amountIn = base + i;
 
             if (this.flatFeeInExactIn(feeBps, amountIn) > amountIn) ++flatOvershoots;
@@ -317,11 +369,11 @@ contract FeeRepro is Test, FeeExperimental {
             if (finalAmountIn > amountIn) ++protocolOvershoots;
         }
 
-        emit log_named_uint("_flatFeeAmountInXD overshoots", flatOvershoots);
-        emit log_named_uint("_feeAmountIn overshoots", protocolOvershoots);
+        emit log_named_uint("_flatFeeAmountInXD overshoots per 5000", flatOvershoots);
+        emit log_named_uint("_feeAmountIn      overshoots per 5000", protocolOvershoots);
 
         assertEq(flatOvershoots, 0, "the ceiling variant never reconstructs above the offer");
-        assertGt(protocolOvershoots, 0, "the flooring variant does");
+        assertEq(protocolOvershoots, 15, "the flooring variant does so at exactly the fee rate");
     }
 
     // -----------------------------------------------------------------------
