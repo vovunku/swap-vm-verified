@@ -63,32 +63,41 @@ quantified over a sub-domain carved out by four assumptions; this form quantifie
 `uint256` triple, with reverting inputs satisfying it vacuously and covered separately by
 the dedicated revert tests. Prefer it whenever a property is only interesting on the
 success path.
-| Proof | Status |
-|---|---|
-| `XYCSwapSpec.setUp()` | PASSED |
-| `XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn` | PASSED |
-| `XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput` | PASSED |
-| `XYCSwapSpec.test_exactIn_cannotDrainPool` | pending |
-| `BalancesSpec.setUp()` | PASSED |
-| `BalancesSpec.test_assignmentOrderedByTokenAddress` | PASSED |
-| `BalancesSpec.test_swappingTokensSwapsRegisterAssignment` | PASSED |
-| `BalancesSpec.test_revertsUnlessBothIncomingBalancesZero` | PASSED |
-| `BalancesSpec.test_succeedsWithBothIncomingBalancesZero` | PASSED |
-| `BalancesSpec.test_zeroArgsIsNoOpWhenRegistersZero` | PASSED |
-| `BalancesSpec.test_equalTokensTakesElseBranch` | PASSED |
-| `BalancesSpec.test_oversizedArgsIgnoreTrailingBytes` | PASSED |
-| `BalancesSpec.test_finding_shortArgsNeverRevert` | PASSED |
-| everything else | not yet attempted |
+**The status table that used to sit here has been removed — not because it was wrong, but
+because it cannot be checked from here.**
 
-The two original passing proofs confirm the harness shape works end to end: an `internal pure`
-instruction, reached through an external harness that assembles `Context` in memory, is
-provable. They do not yet exercise the `mulDiv` reasoning — `cannotDrainPool` is the first
-property that does, and so the first real test of the lemma library.
+It listed nine `BalancesSpec` proofs as PASSED, and per `e59732a` and `906e2d7` they were:
+"prove all properties under Kontrol (no new lemmas required) … all PASSED, 0 failing/0 stuck",
+with per-property times of 35m/24m/18m. Track A recorded its results carefully and
+distinguished proven from fuzz-green throughout.
+
+The problem is that **`out/proofs/` is gitignored and per-machine.** Those proofs live in the
+container they were produced in. A different machine's store contains **zero** `BalancesSpec`,
+`ControlsSpec`, `BaseFeeAdjusterSpec` or `MinRateSpec` directories, so a reader cannot verify
+the table without re-running — and a table that cannot be checked drifts silently, which is
+what line 31 above warns about.
+
+**Do not add another.** Ship the store instead (`scripts/kontrol-proofs.sh save`, and see
+`VERIFY.md` on the pre-built bundle), and read status from these, which cannot drift:
+
+* `analysis/INSTRUCTION-STATUS.md` — per-instruction coverage, regenerated from the store
+* `analysis/PROOF-MAP.md` — proof-store operations and per-spec counts
+* the store itself, which is the only thing that cannot drift:
+
+```bash
+docker exec -u user kontrol python3 - <SpecName> < scripts/proof-status.py
+```
+
+The harness shape is confirmed to work end to end: an `internal pure` instruction, reached
+through an external harness that assembles `Context` in memory, is provable. `cannotDrainPool`
+is the first property that exercises `mulDiv` reasoning, and it is one of the four XYCSwap
+properties still open at full `uint256` width — see `[prove.xycswap-open]` in `kontrol.toml`.
 
 The `BalancesSpec` set closes without new lemmas (Track A3): `_staticBalancesXD` does no
 arithmetic, only a `tokenIn < tokenOut` branch and two calldata word reads. All ten
-properties are now machine-checked, including the token-address ordering of the args and
-the zero-balance guard that rejects a second application. The proofs are slower than their
+properties were machine-checked on the machine that ran them — though **not in this
+container's store**, which holds no `BalancesSpec` proofs at all; see the note above on
+`out/proofs/` being per-machine. The claims below describe that run. The proofs are slower than their
 lack of arithmetic suggests — but inspection of the KCFG shows the cost is symbolic-
 execution step count (~2.7k steps just for the harness/test machinery) plus KEVM server
 overhead, NOT a hard SMT goal: concrete-input proofs take ~12 min and the symbolic one
@@ -115,7 +124,14 @@ expects `SetBalancesExpectZeroBalances(incomingBalanceIn, incomingBalanceOut)` (
 gas, or a different selector would all pass a loose `vm.expectRevert()` but fail here.
 
 Treat "passes `forge test`" and "proven" as different claims, and do not describe an
-instruction as verified until it appears above.
+instruction as verified until the proof store says so — `scripts/proof-status.py`, not a
+table in a document.
+
+**A trap in reading the store, which cost a wrong count in this project.** A leaf listed in
+`proof.json`'s `terminal` set is NOT necessarily discharged. If it is the *target*, the branch
+closed; if it is terminal and NOT the target, execution finished in a state that fails the
+claim — a **refutation**. Classifying every terminal leaf as closed reports refutations as
+passes. `scripts/proof-status.py` gets this right and exits non-zero on any FAILED.
 
 ## Layout
 

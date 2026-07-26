@@ -123,10 +123,19 @@ code with seven data-dependent branches and no symbol for a lemma to attach to, 
 creates the seam a lemma can target. The residual assumption is narrow and explicit: that
 OZ's `Math.sqrt` computes a correct integer square root.
 
-**This surface has never once been exercised.** Every `test_seam_*` run so far has stalled
-before reaching the first `_isqrt`, because the harness takes `bytes calldata args` fully
-symbolic and `lengthBytes(args)` propagates into every memory offset. So the seam is
-currently neither validated nor refuted — it is untested infrastructure.
+**CORRECTION (re-measured from the proof store).** The claim previously made here — that
+this surface "has never once been exercised" and that every `test_seam_*` run had stalled —
+was **false**. Eight seam proof directories existed; two had PASSED:
+`test_seam_bothBalancesZeroGuardFiresWhenBothZero` at 128 nodes, and
+`test_seam_realisticPoolMatchesInstruction` at 4 nodes — the latter a *genuine differential*
+comparing `seamExactOut` against the real instruction register-for-register, with an
+explicit anti-vacuity guard. One goal had expanded to 166 nodes.
+
+**The seam has since been DELETED.** `PeggedSwapHarness` is now a plain wrapper (120 lines,
+no arithmetic, no `require`) and `PeggedSwapSpec` carries 31 properties, all stated against
+the complete `_peggedSwapGrowPriceRange2D`. The two passing seam proofs were statements
+about a transcription and were given up deliberately; the 33-property plain surface that
+found the `:215` underflow is untouched. Tier 2 now contains only `XYCConcentrate`.
 
 The tier-1 `PeggedSwap` entrypoints (`run`, `exactIn`, `exactOut`) are unaffected and call
 the real instruction; the confirmed underflow bug was found through those, not through the

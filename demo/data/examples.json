@@ -1,0 +1,200 @@
+[
+  {
+    "label": "catalogue",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000003635c9adc5dea0000000000000000000000000000000000000000000000000006c6b935b8bbd400000530101",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Running",
+      "amountOut": null
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "floorNotCeil",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000000000000002530101",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Running",
+      "amountOut": "0"
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": "1",
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "floorNonDividing",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000000000000007530101",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Running",
+      "amountOut": "11"
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": "5",
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "revPrices",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000003635c9adc5dea0000000000000000000000000000000000000000000000000006c6b935b8bbd400000530100",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Running",
+      "amountOut": "500000000000000000"
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": "1000000000000000000",
+      "tokenIn": "9",
+      "tokenOut": "2",
+      "amountOutIn": "0",
+      "isExactIn": "true"
+    }
+  },
+  {
+    "label": "revRecompute",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000003635c9adc5dea0000000000000000000000000000000000000000000000000006c6b935b8bbd400000530100",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Reverted",
+      "amountOut": null
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": "1000000000000000000",
+      "tokenIn": "9",
+      "tokenOut": "2",
+      "amountOutIn": "7",
+      "isExactIn": "true"
+    }
+  },
+  {
+    "label": "revRecomputeOut",
+    "bytes": "231400000000000000000000000000000000000000aa904000000000000000000000000000000000000000000000003635c9adc5dea0000000000000000000000000000000000000000000000000006c6b935b8bbd400000530100",
+    "length": 91,
+    "expect": {
+      "pc": 91,
+      "status": "Reverted",
+      "amountOut": null
+    },
+    "config": {
+      "balances": "bal(170,4660) |-> 5",
+      "amountIn": "7",
+      "tokenIn": "9",
+      "tokenOut": "2",
+      "amountOutIn": "3",
+      "isExactIn": "false"
+    }
+  },
+  {
+    "label": "gateRejects",
+    "bytes": "231400000000000000000000000000000000000000aa",
+    "length": 22,
+    "expect": {
+      "pc": 22,
+      "status": "Reverted",
+      "amountOut": null
+    },
+    "config": {
+      "balances": ".Map",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "loneOpcode",
+    "bytes": "53",
+    "length": 1,
+    "expect": {
+      "pc": 2,
+      "status": "Reverted",
+      "amountOut": null
+    },
+    "config": {
+      "balances": ".Map",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "argsOverrun",
+    "bytes": "5340",
+    "length": 2,
+    "expect": {
+      "pc": 66,
+      "status": "Reverted",
+      "amountOut": null
+    },
+    "config": {
+      "balances": ".Map",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "empty",
+    "bytes": "",
+    "length": 0,
+    "expect": {
+      "pc": 0,
+      "status": "Running",
+      "amountOut": null
+    },
+    "config": {
+      "balances": ".Map",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  },
+  {
+    "label": "zeroArg",
+    "bytes": "5000",
+    "length": 2,
+    "expect": {
+      "pc": 2,
+      "status": "Running",
+      "amountOut": null
+    },
+    "config": {
+      "balances": ".Map",
+      "amountIn": null,
+      "tokenIn": null,
+      "tokenOut": null,
+      "amountOutIn": null,
+      "isExactIn": null
+    }
+  }
+]

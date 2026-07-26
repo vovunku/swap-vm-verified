@@ -217,6 +217,109 @@ optimize-kcfg              = false
 smt-timeout                = 120000
 smt-retry-limit            = 0
 
+# ---------------------------------------------------------------------------
+# XYCSwap: the reproducible green set, and the honest quarantine beside it.
+# ---------------------------------------------------------------------------
+#
+# Profiles do NOT inherit from [prove.default] -- every setting is repeated, as in the
+# profiles above. Both carry `--fallback-on Aborted` via `kore-rpc-command`; see the note
+# at the end of this file for why that flag is load-bearing.
+#
+# NOTE ON `match-test`: it is a REGEX matched with `re.search`, so a bare property name
+# also matches its `_boundedTo128Bits` twin. Full signatures are used to disambiguate --
+# the twins take `uint128` and the full-width forms take `uint256`.
+
+[prove.xycswap]
+foundry-project-root       = '.'
+workers                    = 2
+max-frontier-parallel      = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+log-rewrites               = false
+maintenance-rate           = 16
+smt-timeout                = 120000
+smt-retry-limit            = 0
+kore-rpc-command           = 'kore-rpc-booster --no-post-exec-simplify --equation-max-recursion 100 --equation-max-iterations 1000 --fallback-on Aborted'
+match-test = [
+  # -- concrete witnesses (non-vacuity anchors for everything below) --
+  'XYCSwapSpec.test_exactIn_quoteIsReachable_witness()',
+  'XYCSwapSpec.test_exactOut_quoteIsReachable_witness()',
+  # -- guards --
+  'XYCSwapSpec.test_exactIn_revertsOnZeroBalanceIn(uint256,uint256)',
+  'XYCSwapSpec.test_exactIn_revertsOnZeroBalanceOut(uint256,uint256)',
+  'XYCSwapSpec.test_exactIn_revertsWhenAmountOutAlreadySet(uint256,uint256,uint256,uint256)',
+  # -- boundaries --
+  'XYCSwapSpec.test_exactIn_zeroInputYieldsZeroOutput(uint256,uint256)',
+  'XYCSwapSpec.test_exactOut_zeroOutputCostsNothing(uint256,uint256)',
+  # -- arithmetic that closes at full width --
+  'XYCSwapSpec.test_exactOut_roundsInFavourOfMaker(uint256,uint256,uint256)',
+  'XYCSwapSpec.test_exactIn_constantProductNeverDecreases(uint256,uint256,uint256)',
+  # -- the four narrowed twins (see the quarantine profile below) --
+  'XYCSwapSpec.test_exactIn_cannotDrainPool_boundedTo128Bits(uint128,uint128,uint128)',
+  'XYCSwapSpec.test_exactIn_roundsInFavourOfMaker_boundedTo128Bits(uint128,uint128,uint128)',
+  'XYCSwapSpec.test_exactIn_isExactlyTheFloor_boundedTo128Bits(uint128,uint128,uint128)',
+  'XYCSwapSpec.test_exactOut_isExactlyTheCeiling_boundedTo128Bits(uint128,uint128,uint128)',
+]
+
+# The four that do NOT close. Kept runnable rather than deleted or commented out, so a
+# future attempt is a one-liner and the gap stays visible.
+#
+# WHAT IS WRONG WITH THEM. All four are stated over full `uint256` with `try`/`catch`.
+# Each has a `_boundedTo128Bits` twin in [prove.xycswap] which is the SAME property with
+# 128-bit operands. Measured on this tree:
+#
+#     all four narrowed twins   ->  115 s total  (7 s, 8 s, 45 s, 55 s)
+#     the four full-width forms ->  >40 min across four prover configurations
+#                                   plus a rebuild; none closed
+#
+# The cause is the assertion terms, not the curve. At full width the exact-out statement
+# forms `(ceilDiv(n, d) - 1) * d` -- a symbolic division multiplied back by its own divisor,
+# under `chop`, compared against a symbolic product. Below 2**128 every product is
+# representable, `chop` disappears, and the overflow branches go with it.
+#
+# RULED OUT BY MEASUREMENT, so nobody repeats the search:
+#   * SMT           -- the goals were extracted to QF_NIA and z3 decided them in <60 ms
+#   * equation limits -- raised 5 -> 100 in the booster, no change
+#   * this repo's lemmas.k -- rebuilt with SWAPVM-LEMMAS removed entirely, hang reproduced
+#   * under-expansion -- reproduced across three runs and two proof versions
+#   * CSE           -- ran once the harness dropped its `bytes` parameter; no movement
+#
+# `--fallback-on Aborted` DOES move them (68 -> 151 nodes where nothing moved before) but
+# they plateau again deeper in. That flag is the single most useful lever found so far.
+[prove.xycswap-open]
+foundry-project-root       = '.'
+workers                    = 2
+max-frontier-parallel      = 2
+failure-information        = true
+counterexample-information = true
+fail-fast                  = false
+run-constructor            = false
+no-stack-checks            = true
+schedule                   = 'CANCUN'
+max-depth                  = 2000
+break-on-basic-blocks      = true
+break-on-calls             = true
+optimize-kcfg              = false
+log-rewrites               = false
+maintenance-rate           = 16
+smt-timeout                = 120000
+smt-retry-limit            = 0
+kore-rpc-command           = 'kore-rpc-booster --no-post-exec-simplify --equation-max-recursion 100 --equation-max-iterations 1000 --fallback-on Aborted'
+match-test = [
+  'XYCSwapSpec.test_exactIn_cannotDrainPool(uint256,uint256,uint256)',
+  'XYCSwapSpec.test_exactIn_roundsInFavourOfMaker(uint256,uint256,uint256)',
+  'XYCSwapSpec.test_exactIn_isExactlyTheFloor(uint256,uint256,uint256)',
+  'XYCSwapSpec.test_exactOut_isExactlyTheCeiling(uint256,uint256,uint256)',
+]
+
 [show.default]
 foundry-project-root       = '.'
 verbose                    = false
@@ -226,3 +329,41 @@ use-hex-encoding           = false
 [view-kcfg.default]
 foundry-project-root       = '.'
 use-hex-encoding           = false
+
+# ---------------------------------------------------------------------------
+# `--fallback-on Aborted`: what it does, and why it is not in [prove.default]
+# ---------------------------------------------------------------------------
+#
+# Kontrol talks to a PROXY in front of two backends: `kore-rpc-booster` (fast, LLVM-backed,
+# INCOMPLETE) and `kore-rpc` ("Kore", slow, complete). When the booster cannot finish a step
+# it gives up with a reason -- `Aborted`, `Stuck` or `Branching`. The proxy has a list of
+# reasons that trigger FALLBACK: simplify the whole state and re-execute the step in Kore.
+# From `booster/tools/booster/Proxy.hs`, the default list is ALL THREE:
+#
+#     -- if we stop for a reason in fallbackReasons (default [Aborted, Stuck, Branching],
+#     -- revert to the old backend to re-confirm and possibly proceed.
+#
+# `--fallback-on Aborted` shortens that list to one entry, so `Stuck` and `Branching` no
+# longer punt to Kore.
+#
+# WHY IT MATTERS HERE. Measured on `XYCSwapSpec.test_exactOut_isExactlyTheCeiling`: six
+# `execute` RPCs are issued, the first five return in milliseconds, and the sixth NEVER
+# RETURNS -- 8m23s with zero nodes produced, reproduced across three runs and two proof
+# versions. Booster-level logging shows that step running in the `[kore]` context with
+# ~14.6 MILLION nested `[constraint]` simplifications against only ~6,000 successful rule
+# applications. The work is side-condition checking that never converges, in the LEGACY
+# backend, reached by fallback. With the flag, that goal advanced 68 -> 151 nodes.
+#
+# This is why the obvious knobs did nothing: `--equation-max-recursion` and
+# `--equation-max-iterations` tune the BOOSTER, and the booster was not where the time went.
+#
+# THE TRADE, WHICH IS REAL. The booster is less complete than Kore, so declining the
+# `Stuck`/`Branching` fallback can leave a node genuinely stuck that Kore would have
+# advanced. Optimism keeps the default all-three; Lido uses exactly `--fallback-on Aborted`.
+# It is kept OUT of [prove.default] for that reason -- opt in per profile, deliberately.
+# A stuck node is at least visible; the hang tells you nothing.
+#
+# DIAGNOSING A HANG. `ls out/proofs/<id>/kcfg/nodes | wc -l` over time is a LIVE progress
+# signal -- nodes are written as they are computed, independently of the `proof.json` flush
+# (which `maintenance-rate = 16` makes rare). Do not infer progress from a quiet log, and do
+# not infer "SMT is struggling" without checking the `z3` child's CPU first.

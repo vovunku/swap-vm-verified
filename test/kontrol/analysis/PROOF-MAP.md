@@ -53,7 +53,7 @@ Legend: **P** proven · **F** failed · **S** stalled · **·** not attempted ·
 |---|---|---|---|
 | PiecewiseLinearScale | 31 | **24** | 27 |
 | Power | 31 | **12** | 15 |
-| XYCSwap | 13 | **8** | 10 |
+| XYCSwap | 17 | **13** | 17 | see §XYCSwap below — re-measured, single digest |
 | XYCConcentrate | 21 | **6** | 9 |
 | PeggedSwap | 37 | **6** | 12 |
 | **Track B total** | **133** | **56** | **73** |
@@ -72,6 +72,64 @@ constraint, not provability.
   evidence tier available for the PeggedSwap bug report.
 - **`test_value_unscaleThenScaleIsIdentity`** went from FAILING to PASSED on a lemma written
   against a dumped term.
+
+## XYCSwap — 13 of 17, all against one digest
+
+Re-measured from the store after a harness change. **Read the count with the caveat that
+matters: before this pass the file claimed 8 of 13, but 10 of those 13 were STALE against
+the build on disk** — `method.up_to_date(digest_file)` was false for them, so every
+`kontrol prove` invocation was minting a fresh version and starting from node 0. Only one
+property was genuinely proven against current artifacts. All 17 below now sit on one digest.
+
+| | count | notes |
+|---|---|---|
+| proven | **13** | 9 unconditional + 4 narrowed twins |
+| open | 4 | the full-width exactness forms; twins proven, see `[prove.xycswap-open]` |
+
+Reproduce with `./scripts/kontrol-prove.sh xycswap`.
+
+**Also corrected by this pass:** `test_exactOut_zeroOutputCostsNothing` was counted in the
+gap but had **never been dispatched** — no proof directory existed. It passed on first
+attempt in 3 minutes. Part of what read as difficulty was unattempted work, which is
+consistent with the "throughput is the constraint" line above.
+
+### The four that do not close, and what was ruled out
+
+All four are full-`uint256` two-sided exactness statements with `try`/`catch`. Their
+`_boundedTo128Bits` twins are the same properties at 128-bit width:
+
+    four narrowed twins    ->  115 s total (7 s, 8 s, 45 s, 55 s)
+    four full-width forms  ->  >40 min over four prover configurations plus a rebuild;
+                               none closed
+
+Ruled out **by measurement**, recorded so nobody repeats the search:
+
+* **SMT** — the goals were extracted to `QF_NIA` and z3 decided them in under 60 ms.
+* **Booster equation limits** — raised 5 → 100; no change. The step never reaches a limit.
+* **This repository's `lemmas.k`** — rebuilt with `SWAPVM-LEMMAS` removed from the
+  definition entirely (verified: 0 occurrences in `definition.kore`); the hang reproduced
+  **exactly**. This is the first controlled test of the lemma library's contribution, and
+  for this spec the answer is that it contributes nothing. See `RECONCILIATION.md` §3,
+  which had this as "unevidenced" — it is now measured.
+* **Under-expansion / killed runs** — reproduced across three runs and two proof versions.
+* **CSE** — became available once the harness dropped its `bytes` parameter (see below);
+  ran, produced no node movement.
+
+What *does* move them is `--fallback-on Aborted` (68 → 151 nodes where nothing had moved).
+The mechanism, and why the booster knobs were the wrong place to look, is documented at
+the end of `kontrol.toml`. They plateau again deeper in, so it is a partial lever.
+
+### Harness change, and why it does not weaken the claim
+
+`XYCSwapHarness` dropped its `bytes calldata args` parameter and passes `msg.data[0:0]`.
+`_xycSwapXD` never reads that parameter — it is unnamed in the production source — and
+every property already passed the literal `""` at every call site, so the proven domain was
+args-empty before and after. It also unblocked `--cse`: Kontrol 1.0.255 derives the summary
+target via `arg_types.split()[1]` (`kontrol/solc_to_k.py:1139-1140`), which takes the second
+whitespace-delimited token as the whole argument list, so any reference-type parameter
+carries a data location and truncates the signature —
+`(uint256,uint256,uint256,bytes memory)` became `(uint256,uint256,uint256,bytes` and
+`--cse` aborted with `Test identifiers not found`. Upstream defect; worth reporting.
 
 ### What the stalls have actually been
 
@@ -168,9 +226,26 @@ missing lemma, and that misdiagnosis has cost multiple sessions.
    node explosion into a path-condition explosion. Dropping the disjunction is an
    over-approximation, and therefore **sound for every safety property in `PowerSpec`**,
    which are all upper bounds and orderings. It is a one-flag upstream ask.
-5. **Decide the `PeggedSwap` seam's fate.** 200 lines that have never executed, against a
+5. ~~**Decide the `PeggedSwap` seam's fate.** 200 lines that have never executed, against a
    ~90-line plain import in the same file that found the strongest bug in the repo. If
-   restating over a fixed-layout `_args(...)` does not make it run, delete it.
+   restating over a fixed-layout `_args(...)` does not make it run, delete it.~~
+   **DONE — deleted.** Two corrections to the premise first: the seam *had* executed (eight
+   proof directories, two PASSED, one goal expanded to 166 nodes), so "never executed" was
+   wrong. It was removed anyway, for the reason the item was really about: it put two
+   evidence tiers in one contract, and `contract_digest` covers the whole contract JSON, so
+   editing a transcription re-versioned the plain proofs that found the repo's strongest bug.
+   `PeggedSwapHarness` is now 120 lines with no arithmetic and no `require`;
+   `PeggedSwapSpec` carries 31 properties, all against the complete function.
+
+   **`XYCConcentrate` was deliberately NOT given the same treatment.** Its ratio is inverted
+   — 16 of 21 properties are leg-level — and the real-code surface does not prove:
+   `test_full_exactIn_revertsWhenAmountOutAlreadySet:1` sits at 197 nodes with 2 pending
+   leaves and did not move under `--fallback-on Aborted` in a 600 s run. (Caveat: that run
+   shared a box at load 14.8, and starvation is indistinguishable from stalling — worth
+   re-running quiet before treating it as settled.) Deleting there would cost 16 properties
+   and six passing proofs with nothing to replace them. The untried lever is
+   `kontrol-solady`'s `log2`/shift lemmas, which target OZ `sqrt`'s MSB cascade directly; no
+   public OpenZeppelin `sqrt` lemma set exists, so that is first-mover work.
 
 ## Preserving proofs
 

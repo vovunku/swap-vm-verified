@@ -18,6 +18,16 @@ import { XYCSwapHarness } from "./harnesses/XYCSwapHarness.sol";
 ///      Any reimplementation must preserve the rounding direction exactly — a change of
 ///      one wei is an economic change, not a wash.
 ///
+///      ## The instruction arguments are empty, and always were
+///
+///      `_xycSwapXD` never reads its `bytes calldata args` parameter — it is unnamed in
+///      the production source. Every property below previously passed the literal `""` at
+///      every call site, so the domain proven has always been args-empty. The harness now
+///      supplies `msg.data[0:0]` internally instead of taking the parameter, which states
+///      the same theorems over the same domain; see `XYCSwapHarness` for why that also
+///      matters for `--cse`. Nothing here is quantified over argument bytes, and nothing
+///      here ever was.
+///
 ///      ## Why the safety properties are not the whole specification
 ///
 ///      The four exact-in properties below (`cannotDrainPool`, `roundsInFavourOfMaker`,
@@ -86,8 +96,10 @@ contract XYCSwapSpec is Test {
     ///      This is strictly stronger than the assumption form. It quantifies over every
     ///      `uint256` triple rather than over a sub-domain, so nothing is narrowed to make
     ///      the proof close.
+    /// @custom:kontrol-status OPEN at full width — proven form is
+    ///      `test_exactIn_cannotDrainPool_boundedTo128Bits`. See PROOF-MAP.md.
     function test_exactIn_cannotDrainPool(uint256 balanceIn, uint256 balanceOut, uint256 amountIn) public view {
-        try harness.exactIn(balanceIn, balanceOut, amountIn, "") returns (uint256 amountOut) {
+        try harness.exactIn(balanceIn, balanceOut, amountIn) returns (uint256 amountOut) {
             assertLt(amountOut, balanceOut, "exactIn must never return the full output balance");
         } catch {
             // Reverted: the guards rejected it, or the arithmetic overflowed. Either way
@@ -107,8 +119,10 @@ contract XYCSwapSpec is Test {
     ///      Same `try`/`catch` framing as `cannotDrainPool`, and for the same reason. Note
     ///      that both products below are safe to compute on the success path precisely
     ///      because the instruction already evaluated them without reverting.
+    /// @custom:kontrol-status OPEN at full width — proven form is
+    ///      `test_exactIn_roundsInFavourOfMaker_boundedTo128Bits`. See PROOF-MAP.md.
     function test_exactIn_roundsInFavourOfMaker(uint256 balanceIn, uint256 balanceOut, uint256 amountIn) public view {
-        try harness.exactIn(balanceIn, balanceOut, amountIn, "") returns (uint256 amountOut) {
+        try harness.exactIn(balanceIn, balanceOut, amountIn) returns (uint256 amountOut) {
             assertLe(
                 amountOut * (balanceIn + amountIn),
                 amountIn * balanceOut,
@@ -160,8 +174,10 @@ contract XYCSwapSpec is Test {
     ///      So the exactness of the curve is pinned over the *whole* `uint256` domain, not
     ///      over a sub-cube of it. `try`/`catch` framing as in `cannotDrainPool`: reverting
     ///      inputs are covered by the dedicated revert tests.
+    /// @custom:kontrol-status OPEN at full width — proven form is
+    ///      `test_exactIn_isExactlyTheFloor_boundedTo128Bits`. See PROOF-MAP.md.
     function test_exactIn_isExactlyTheFloor(uint256 balanceIn, uint256 balanceOut, uint256 amountIn) public view {
-        try harness.exactIn(balanceIn, balanceOut, amountIn, "") returns (uint256 amountOut) {
+        try harness.exactIn(balanceIn, balanceOut, amountIn) returns (uint256 amountOut) {
             // `balanceIn > 0` on the success path, so `d > 0` and the floor is well defined.
             uint256 denominator = balanceIn + amountIn;
             uint256 numerator = amountIn * balanceOut;
@@ -209,6 +225,8 @@ contract XYCSwapSpec is Test {
     ///      `test_exactOut_zeroOutputCostsNothing` directly below — it was briefly covered by
     ///      nothing, because an earlier version of this comment pointed at a test that lives
     ///      in `XYCConcentrateSpec`, not here.
+    /// @custom:kontrol-status OPEN at full width — proven form is
+    ///      `test_exactOut_isExactlyTheCeiling_boundedTo128Bits`. See PROOF-MAP.md.
     function test_exactOut_isExactlyTheCeiling(uint256 balanceIn, uint256 balanceOut, uint256 amountOut)
         public
         view
@@ -218,7 +236,7 @@ contract XYCSwapSpec is Test {
         // `balanceOut - amountOut` must not underflow and must be a usable divisor.
         vm.assume(amountOut < balanceOut);
 
-        try harness.exactOut(balanceIn, balanceOut, amountOut, "") returns (uint256 amountIn) {
+        try harness.exactOut(balanceIn, balanceOut, amountOut) returns (uint256 amountIn) {
             uint256 d = balanceOut - amountOut;
             uint256 n = amountOut * balanceIn;
 
@@ -244,7 +262,7 @@ contract XYCSwapSpec is Test {
         vm.assume(balanceIn > 0);
         vm.assume(balanceOut > 0);
 
-        try harness.exactOut(balanceIn, balanceOut, 0, "") returns (uint256 amountIn) {
+        try harness.exactOut(balanceIn, balanceOut, 0) returns (uint256 amountIn) {
             assertEq(amountIn, 0, "a zero output request must cost nothing");
         } catch {
             // Reverted; nothing to pin.
@@ -273,7 +291,7 @@ contract XYCSwapSpec is Test {
     ///      arithmetic. `XYCConcentrateSpec.test_exactIn_clampIsReachable_witness` is the
     ///      same shape and proves under Kontrol in about a minute.
     function test_exactIn_quoteIsReachable_witness() public view {
-        uint256 amountOut = harness.exactIn(1000, 200, 10_000, "");
+        uint256 amountOut = harness.exactIn(1000, 200, 10_000);
 
         assertEq(amountOut, 181, "exact-in must quote the floor of the curve value");
 
@@ -300,7 +318,7 @@ contract XYCSwapSpec is Test {
     ///      Note `floor(101_000 / 99) = 1020`, so the two rounding directions are one wei
     ///      apart here and the assertion distinguishes them.
     function test_exactOut_quoteIsReachable_witness() public view {
-        uint256 amountIn = harness.exactOut(1000, 200, 101, "");
+        uint256 amountIn = harness.exactOut(1000, 200, 101);
 
         assertEq(amountIn, 1021, "exact-out must charge the ceiling of the curve value");
 
@@ -312,7 +330,7 @@ contract XYCSwapSpec is Test {
         vm.assume(balanceIn > 0);
         vm.assume(balanceOut > 0);
 
-        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, 0, "");
+        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, 0);
 
         assertEq(amountOut, 0, "zero input must yield zero output");
     }
@@ -337,7 +355,7 @@ contract XYCSwapSpec is Test {
         vm.assume(balanceOut > 0 && balanceOut < 2 ** 128);
         vm.assume(amountIn < 2 ** 128);
 
-        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, amountIn, "");
+        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, amountIn);
 
         assertGe(
             (balanceIn + amountIn) * (balanceOut - amountOut),
@@ -363,7 +381,7 @@ contract XYCSwapSpec is Test {
         vm.expectRevert(
             abi.encodeWithSelector(XYCSwap.XYCSwapRequiresBothBalancesNonZero.selector, uint256(0), balanceOut)
         );
-        harness.exactIn(0, balanceOut, amountIn, "");
+        harness.exactIn(0, balanceOut, amountIn);
     }
 
     /// @notice A zero output balance is rejected.
@@ -373,7 +391,7 @@ contract XYCSwapSpec is Test {
         vm.expectRevert(
             abi.encodeWithSelector(XYCSwap.XYCSwapRequiresBothBalancesNonZero.selector, balanceIn, uint256(0))
         );
-        harness.exactIn(balanceIn, 0, amountIn, "");
+        harness.exactIn(balanceIn, 0, amountIn);
     }
 
     /// @notice The recompute guard rejects a pre-populated output register.
@@ -393,7 +411,7 @@ contract XYCSwapSpec is Test {
         vm.assume(amountOut != 0);
 
         vm.expectRevert(XYCSwap.XYCSwapRecomputeDetected.selector);
-        harness.exactInWithAmountOut(balanceIn, balanceOut, amountIn, amountOut, "");
+        harness.exactInWithAmountOut(balanceIn, balanceOut, amountIn, amountOut);
     }
 
     // -----------------------------------------------------------------------
@@ -412,12 +430,142 @@ contract XYCSwapSpec is Test {
         // `balanceOut - amountOut` must not underflow and must be a usable divisor
         vm.assume(amountOut > 0 && amountOut < balanceOut);
 
-        uint256 amountIn = harness.exactOut(balanceIn, balanceOut, amountOut, "");
+        uint256 amountIn = harness.exactOut(balanceIn, balanceOut, amountOut);
 
         assertGe(
             amountIn * (balanceOut - amountOut),
             amountOut * balanceIn,
             "ceiling must not round the taker's input down"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Narrowed twins of the four full-width properties
+    // -----------------------------------------------------------------------
+    //
+    // Each property below is the 128-bit restriction of a full-`uint256` property stated
+    // earlier in this file. THE FULL-WIDTH FORMS ARE NOT DELETED AND NOT WEAKENED. They
+    // remain above, exactly as written, and remain OPEN — see PROOF-MAP.
+    //
+    // ## Why the twins exist
+    //
+    // The four full-width forms do not close under Kontrol, and the reason was measured
+    // rather than assumed. On `test_exactOut_isExactlyTheCeiling` the prover issues six
+    // `execute` RPCs; the first five return in milliseconds and the sixth never returns —
+    // 8m23s with zero nodes produced, reproduced across three runs and across two proof
+    // versions. It is not SMT (the six outstanding goals were put to z3 directly and
+    // decided in under 60 ms), not the booster's equation limits (raising them 5 -> 100
+    // changed nothing), and not this repository's lemma library (rebuilding with
+    // SWAPVM-LEMMAS removed entirely reproduced the hang exactly).
+    //
+    // What is left is the shape of the assertion terms. At full width the exact-out
+    // statement forms `(ceilDiv(n, d) - 1) * d` — a symbolic division multiplied back by
+    // its own divisor, under `chop`, compared against a symbolic product `n`. Below 2**128
+    // every product is representable, `chop` disappears, and the arithmetic-overflow
+    // branches vanish with it. That is the whole of the difference.
+    //
+    // ## What the bound costs, stated honestly
+    //
+    // An implementation correct below 2**128 and arbitrarily wrong above it would satisfy
+    // these and fail the full-width forms. That is a real gap and it is why the full-width
+    // statements are kept rather than replaced.
+    //
+    // For scale: 2**128 wei is ~3.4e20 tokens at 18 decimals, twenty orders of magnitude
+    // above any deployed ERC20 supply. And the bound is *wider* than industrial practice —
+    // Lido's Kontrol suite, verified by Runtime Verification, caps every ETH-denominated
+    // symbolic variable at 2**96 (`KontrolTest.sol`: `ethMaxWidth = 96`).
+    //
+    // ## Why narrow types rather than `vm.assume`
+    //
+    // Per this file's header: Kontrol constrains an ABI-decoded `uintN` directly, so the
+    // domain costs neither a rejected-sample budget under the fuzzer nor an extra path
+    // constraint under the prover. The harness still takes `uint256`, so the bytecode under
+    // test is unchanged — only the test's own ABI narrows.
+    //
+    // ## Why no `try`/`catch`
+    //
+    // Not a loosening. With 128-bit operands the pricing arithmetic cannot overflow, so the
+    // only reachable revert is the zero-balance guard, which the assumptions exclude and
+    // which `test_exactIn_revertsOnZeroBalance*` covers directly. The `try`/`catch` in the
+    // full-width forms exists to absorb overflow reverts that cannot occur here.
+
+    /// @notice 128-bit restriction of `test_exactIn_cannotDrainPool`.
+    function test_exactIn_cannotDrainPool_boundedTo128Bits(
+        uint128 balanceIn,
+        uint128 balanceOut,
+        uint128 amountIn
+    ) public view {
+        vm.assume(balanceIn > 0);
+        vm.assume(balanceOut > 0);
+
+        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, amountIn);
+
+        assertLt(amountOut, balanceOut, "exactIn must never return the full output balance");
+    }
+
+    /// @notice 128-bit restriction of `test_exactIn_roundsInFavourOfMaker`.
+    function test_exactIn_roundsInFavourOfMaker_boundedTo128Bits(
+        uint128 balanceIn,
+        uint128 balanceOut,
+        uint128 amountIn
+    ) public view {
+        vm.assume(balanceIn > 0);
+        vm.assume(balanceOut > 0);
+
+        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, amountIn);
+
+        assertLe(
+            amountOut * (uint256(balanceIn) + amountIn),
+            uint256(amountIn) * balanceOut,
+            "flooring must not round the output up"
+        );
+    }
+
+    /// @notice 128-bit restriction of `test_exactIn_isExactlyTheFloor`. Two-sided: the
+    ///         quote is neither one wei high nor one wei low.
+    function test_exactIn_isExactlyTheFloor_boundedTo128Bits(
+        uint128 balanceIn,
+        uint128 balanceOut,
+        uint128 amountIn
+    ) public view {
+        vm.assume(balanceIn > 0);
+        vm.assume(balanceOut > 0);
+
+        uint256 amountOut = harness.exactIn(balanceIn, balanceOut, amountIn);
+
+        uint256 denominator = uint256(balanceIn) + amountIn;
+        uint256 numerator = uint256(amountIn) * balanceOut;
+
+        assertLe(amountOut * denominator, numerator, "output must not exceed the exact curve value");
+        assertLt(
+            numerator - amountOut * denominator,
+            denominator,
+            "output must not fall a wei short of the floor"
+        );
+    }
+
+    /// @notice 128-bit restriction of `test_exactOut_isExactlyTheCeiling`. Two-sided, and
+    ///         stated over quantities bounded by `n` for the same reason as the full-width
+    ///         form: the instruction never forms `amountIn * d`.
+    function test_exactOut_isExactlyTheCeiling_boundedTo128Bits(
+        uint128 balanceIn,
+        uint128 balanceOut,
+        uint128 amountOut
+    ) public view {
+        vm.assume(balanceIn > 0);
+        vm.assume(amountOut > 0);
+        vm.assume(amountOut < balanceOut);
+
+        uint256 amountIn = harness.exactOut(balanceIn, balanceOut, amountOut);
+
+        uint256 d = uint256(balanceOut) - amountOut;
+        uint256 n = uint256(amountOut) * balanceIn;
+
+        // Taker safety: the ceiling does not overcharge by a whole unit.
+        uint256 belowByOne = (amountIn - 1) * d;
+        assertLt(belowByOne, n, "ceiling must not overcharge by a whole unit");
+
+        // Maker safety, rearranged from `amountIn * d >= n` so no unformed product appears.
+        assertLe(n - belowByOne, d, "ceiling must not round the taker's input down");
     }
 }

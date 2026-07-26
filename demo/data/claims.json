@@ -1,0 +1,57 @@
+{
+  "theorems": [
+    {
+      "id": "T0",
+      "file": "semantics/proofs/gate-spec.k",
+      "verdict": "PROVED",
+      "applies_when": "program starts with OnlyTakerTokenBalanceNonZero",
+      "plain": "Anyone who does not hold the gate token cannot fill this order.",
+      "why_it_is_strong": "This was proved with the rest of the program left completely unknown \u2014 a symbolic tail. So it holds for ANY program you build after the gate block, including ones nobody has written yet. No test suite can cover that set.",
+      "assumptions": [
+        "The gate token answers balanceOf like an ordinary ERC-20.",
+        "The gate block is the FIRST instruction. Move it later and the theorem no longer applies \u2014 instructions before it run first.",
+        "The instruction rules are conformance-TESTED against the real VM, not themselves proven. The theorem holds given each instruction behaves as its rule says."
+      ]
+    },
+    {
+      "id": "T1",
+      "file": "semantics/proofs/pricing-spec.k",
+      "verdict": "PROVED",
+      "applies_when": "gate + StaticBalances + LimitSwap, exact-in",
+      "plain": "The taker receives exactly the maker's advertised rate, rounded down to the wei. Never a wei more, never a wei less.",
+      "why_it_is_strong": "Proved with the trade size and BOTH maker reserves left as unknowns, so it covers every pool size and every order size at once. The two bounds together pin the answer exactly: one alone would be satisfied by quoting zero.",
+      "assumptions": [
+        "amountIn * balanceOut stays below 2^256. Above that the real EVM reverts and the model computes, so they disagree \u2014 and a taker can choose an amountIn that large.",
+        "Rounding goes to the maker. That is deliberate and documented, not a bug."
+      ]
+    },
+    {
+      "id": "T2",
+      "file": "semantics/proofs/pricing-exactout-spec.k",
+      "verdict": "PROVED",
+      "applies_when": "gate + StaticBalances + LimitSwap, exact-out",
+      "plain": "When the taker names the output, the input they pay is exactly the maker's rate rounded up to the wei.",
+      "why_it_is_strong": "The mirror of T1 on the other leg. The two legs round in OPPOSITE directions, and both toward the maker \u2014 that asymmetry is intentional, and now proved rather than sampled.",
+      "assumptions": [
+        "Same overflow caveat as T1."
+      ]
+    }
+  ],
+  "negative_controls": [
+    {
+      "file": "semantics/proofs/negative-control.k",
+      "verdict": "FAILS \u2014 as required",
+      "plain": "A deliberately FALSE claim, asserted so it must fail. If it ever succeeded, the rule set would be self-contradictory and every result above would be worthless. An inconsistent theory proves everything and looks exactly like total success \u2014 this is the only check that catches it."
+    },
+    {
+      "file": "semantics/proofs/pricing-negative-control.k",
+      "verdict": "FAILS \u2014 as required",
+      "plain": "The pricing theorem with its safety inequality reversed. Must fail, and does."
+    }
+  ],
+  "coverage": {
+    "opcodes_modelled": 3,
+    "opcodes_total": 52,
+    "plain": "The K semantics models 3 of the 52 opcodes \u2014 exactly the ones this example program uses. The decode loop is complete; the instruction set is not. Anything else falls through to a no-op in the model while the real VM rejects it, so Verify will say so rather than pretend."
+  }
+}
