@@ -96,15 +96,36 @@ A literal K model would have to:
 
 This is **the same shape of unmodellability** that `opcodes/extruction.md` documents for
 Extruction (an arbitrary external call) and that PLAN.md D4 names as the abstraction boundary
-for external effects. The honest direction — the one this file takes — is to abstract the
-**outcome** of the loop as a Bool predicate and prove STRUCTURAL properties about it (which
-arm fires given which predicate holds), rather than pretending to model the iteration.
+for external effects. The honest direction — the one this file originally took — was to
+abstract the **outcome** of the loop as a Bool predicate and prove STRUCTURAL properties
+about it (which arm fires given which predicate holds), rather than pretending to model the
+iteration.
 
 This is **not** the same as the Bool-predicate arm-selection pattern that Deadline/Gte/
 SupplyShare adopt. Those opcodes' loops are bounded and decidable; their predicates exist
 because of the **SMT encoding limitation** described in "Arm selection" below. The Whitelist
-predicates exist because the loop itself is unmodellable. The two reasons compose: even if
-the SMT limitation were absent, the loop would still be intractable.
+predicates existed because the loop itself was treated as unmodellable. The two reasons
+compose: even if the SMT limitation were absent, the loop would still be intractable in the
+SYMBOLIC case.
+
+**UPDATE (conformance-verification pass):** the predicate abstraction turned out to be
+worse than honest — it was tautological. Every symbolic spec asserted the predicate as a
+premise and the rule branched on the same predicate, so the proofs established NOTHING about
+whether the underlying loop matched Solidity, AND krun could not reduce the predicates on
+concrete inputs either (zero conformance evidence). The conformance-verification pass
+promoted BOTH opcodes out of the abstraction: 0x2c via the recursive `#coequalContains`
+function, 0x2d via the recursive `#seqOutcome` function (with the time arithmetic modelled
+directly, not abstracted). On CONCRETE lists (+ a concrete timestamp for 0x2d) the
+recursions reduce to a concrete Bool / outcome tag via the bytes lemmas
+(`semantics/lemmas.k:16-67`), giving genuine conformance evidence — see
+`proofs/whitelistcoequal-concrete.k` and `proofs/whitelistsequential-concrete.k`. On
+SYMBOLIC lists the recursions are STUCK (neither rule's `requires` reduces), which is the
+honest posture: no false symbolic claim is admitted, but no spurious `#Top` is emitted
+either. The framing above remains accurate for the SYMBOLIC case (a literal K model would
+still be intractable there); what changed is that CONCRETE inputs are now handled directly
+rather than abstracted, and the abstraction is no longer the load-bearing design decision.
+The remainder of this file documents the current (recursive-function) design; historical
+references to the predicate form are retained where they explain why the new form exists.
 
 ## The abstraction boundary (PLAN.md D4)
 
@@ -115,43 +136,71 @@ Per PLAN.md D4 (cross-referenced in `opcodes/extruction.md` "The abstraction bou
 > and none of the six invariants needs it.
 
 WhitelistCoequal and WhitelistSequential are not external calls, but their loops over a
-variable-length byte array are unmodellable for the same reason an arbitrary external call
-is: the K prover cannot reduce the computation to a closed form. The Whitelist abstraction
-boundary is therefore **the loop outcome**, encapsulated in three uninterpreted Bool
-predicates and one uninterpreted Int function:
+variable-length byte array were originally treated as unmodellable for the same reason an
+arbitrary external call is: the K prover cannot reduce the computation to a closed form over
+SYMBOLIC bytes. **As of the conformance-verification pass, BOTH opcodes have been promoted
+out of that abstraction** — their loops are modelled directly by recursive functions
+(`#coequalContains` for 0x2c, `#seqOutcome` for 0x2d; see "What the K rules do" below),
+which evaluate on concrete lists and stay stuck on symbolic lists rather than emitting a
+spurious `#Top`. The declarations are now:
 
 ```k
+// 0x2c — RECURSIVE FUNCTION (conformance-verified; concrete lists evaluate, symbolic stuck)
+syntax Bool ::= #coequalContains        ( Bytes , Int ) [function]
+
+// 0x2d — RECURSIVE OUTCOME FUNCTION (conformance-verified; concrete lists+ts evaluate, symbolic stuck)
 syntax Int  ::= #blockTimestamp ()              [function, no-evaluators]
-syntax Bool ::= #coequalWhitelistContains  ( Bytes , Int ) [function, no-evaluators]
-syntax Bool ::= #sequentialWhitelistJumps  ( Bytes , Int ) [function, no-evaluators]
-syntax Bool ::= #sequentialWhitelistReverts( Bytes , Int ) [function, no-evaluators]
+syntax Int  ::= #wlJump ()        [function]
+syntax Int  ::= #wlRevert ()      [function]
+syntax Int  ::= #wlFallthrough () [function]
+syntax Int  ::= #seqOutcome ( Bytes , Int , Int ) [function]
 ```
 
+- **`#coequalContains(LIST, PACKED)`** (0x2c) — a recursive function that faithfully models
+  the Solidity `while (i-- > 0)` loop (Whitelist.sol:120-128). Base case: empty list → `false`.
+  Recursive case: at least 10 bytes remain → compare the first 10 bytes to `PACKED` (via
+  `Bytes2Int(substrBytes(LIST, 0, 10), BE, Unsigned) ==Int PACKED`) and recurse on the tail.
+  The caller passes the post-header slice `substrBytes(ARGS, 2, lengthBytes(ARGS))` so LIST
+  always has length `N*10` (the canonical-pitch constraint guarantees this) and the function
+  is total on its domain. On CONCRETE lists it reduces to a concrete Bool via the bytes
+  lemmas (`semantics/lemmas.k:16-67`), giving genuine conformance evidence
+  (`proofs/whitelistcoequal-concrete.k`). On SYMBOLIC lists neither rule's `requires`
+  reduces, so the function is STUCK — the honest posture (no false symbolic claim). This
+  REPLACES the prior uninterpreted predicate `#coequalWhitelistContains(ARGS, PACKED)`, which
+  made every symbolic claim tautological and gave zero conformance evidence.
 - **`#blockTimestamp()`** — the chain's `block.timestamp`, mirroring the declaration in
-  `opcodes/deadline.k:78`. No defining rule; its value is fixed-but-unknown. The 0x2d rule
-  does NOT branch on this directly (per the arm-selection limitation below); it appears only
-  conceptually inside the JUMPS/REVERTS predicates. The declaration lets a spec reason about
-  the timestamp when needed.
-- **`#coequalWhitelistContains(ARGS, PACKED)`** — conceptually the result of the 0x2c loop:
-  true iff `PACKED` (= `TAKER modInt 2^80`) matches some 10-byte entry in `ARGS[2:]`. The
-  byte-level parse (`args.slice(2)`, `list.parseWhitelistCoequalIx(i)`, the `i--` iteration)
-  is NOT modelled; the predicate encapsulates its outcome.
-- **`#sequentialWhitelistJumps(ARGS, PACKED)`** — conceptually true iff the 0x2d loop matches
-  `PACKED` at the entry unlocked at `block.timestamp`:
-  ```
-  block.timestamp >= start
-  && exists k: start + Σ_{j<k} duration[j] <= block.timestamp
-                      < start + Σ_{j<=k} duration[j]
-             && sender == allowedTaker[k]
-  ```
-  The start-vs-timestamp comparison, the duration arithmetic, the in-window revert, and the
-  byte-level list parsing are ALL INSIDE this predicate — not modelled directly.
-- **`#sequentialWhitelistReverts(ARGS, PACKED)`** — conceptually true iff the 0x2d loop hits
-  the in-window revert — either `block.timestamp < start`, OR at some entry whose address !=
-  `PACKED` we have `timeLeft < duration` and the require fires. Same encapsulation boundary.
+  `opcodes/deadline.k:78`. No defining rule; its value is fixed-but-unknown. The 0x2d rules
+  branch on this symbol DIRECTLY: the PRE-LOOP REVERT arm tests `#blockTimestamp() <Int start`
+  (mirroring Whitelist.sol:147), and the other three arms pass `#blockTimestamp() -Int start`
+  as the `timeLeft` argument to `#seqOutcome`. A concrete claim fixes the timestamp via a
+  premise (e.g. `requires #blockTimestamp() ==Int 10`) so the recursion reduces.
+- **`#wlJump()`, `#wlRevert()`, `#wlFallthrough()`** — outcome tags for `#seqOutcome`. Each is
+  a 0-arity `[function]` that reduces to a literal Int (`0`, `1`, `2`), so the four-arm rule's
+  premise `#seqOutcome(...) ==Int #wlJump()` is decidable after the recursion reduces on
+  concrete input. (CamelCase rather than SCREAMING_SNAKE_CASE because the K default lexer for
+  `#`-prefixed symbols does not accept underscores.)
+- **`#seqOutcome(LIST, TIMELEFT, PACKED)`** (0x2d) — a recursive function that faithfully
+  models the Solidity `while (i < length)` loop (Whitelist.sol:155-165), INCLUDING the
+  time arithmetic. `LIST` is the post-header slice `args.slice(7)` (12-byte entries);
+  `TIMELEFT` is `block.timestamp - start` (caller preconditions: ts >= start);
+  `PACKED` is `TAKER modInt 2^80`. Per entry: duration = `Bytes2Int(LIST[0:2], BE, Unsigned)`
+  (mirroring `duration := shr(240, word)` in `parseWhitelistSequentialIx`, Whitelist.sol:77),
+  allowedTaker = `Bytes2Int(LIST[2:12], BE, Unsigned)` (mirroring `allowedTaker :=
+  and(shr(160, word), 0xffff...ffff)`, Whitelist.sol:76). Four rules mirror the loop body:
+  (1) empty list → `#wlFallthrough()`; (2) address matches → `#wlJump()` (BEFORE duration
+  check, exactly as in source); (3) address differs AND `TIMELEFT < duration` → `#wlRevert()`;
+  (4) address differs AND `TIMELEFT >= duration` → recurse on the 12-byte tail with
+  `TIMELEFT -Int duration`. On CONCRETE lists + a CONCRETE timestamp the recursion reduces
+  to a concrete outcome tag via the bytes lemmas (`semantics/lemmas.k:16-67`), giving
+  genuine conformance evidence (`proofs/whitelistsequential-concrete.k`). On SYMBOLIC lists
+  neither rule's `requires` reduces, so the function is STUCK. This REPLACES the prior two
+  uninterpreted Bool predicates (`#sequentialWhitelistJumps`, `#sequentialWhitelistReverts`),
+  which made every symbolic claim tautological, gave zero conformance evidence, AND did not
+  model the time-aware loop at all.
 
-FALL THROUGH for 0x2d is the negation of BOTH JUMPS and REVERTS — the rule's FALL-THROUGH arm
-conjoins `notBool #sequentialWhitelistJumps(...)` and `notBool #sequentialWhitelistReverts(...)`.
+FALL THROUGH for 0x2d is no longer the negation of two predicates — it is one of the three
+explicit outcomes returned by `#seqOutcome`, alongside JUMP and REVERT. The rule's
+FALL-THROUGH arm fires when `#seqOutcome(...) ==Int #wlFallthrough()`.
 
 ## The 80-bit packing
 
@@ -204,32 +253,81 @@ form for this backend, per the brief's "CRITICAL lesson" cross-referencing Deadl
 ## What the K rules do
 
 `opcodes/whitelists.k` defines a single module `SWAPVM-WHITELISTS` (one module for both
-opcodes — K v7 cannot reopen `module SWAPVM` across files) holding **seven rules**:
+opcodes — K v7 cannot reopen `module SWAPVM` across files) holding **nine rules**:
 
 1. **0x2c JUMP arm** — canonical-pitch ARGS (`lengthBytes(ARGS) >=Int 2` and
-   `(lengthBytes(ARGS) -Int 2) modInt 10 ==Int 0`), premise `#coequalWhitelistContains(...)`:
-   overwrites `<pc>` with `Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned)`, leaves `#run`
-   in `<k>`.
+   `(lengthBytes(ARGS) -Int 2) modInt 10 ==Int 0`), premise
+   `#coequalContains(substrBytes(ARGS, 2, lengthBytes(ARGS)), TAKER modInt 2^80)` evaluating
+   to `true`: overwrites `<pc>` with `Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned)`,
+   leaves `#run` in `<k>`. The premise is the recursive function evaluation, NOT an
+   uninterpreted predicate — so this arm fires for the right reason on concrete lists.
 2. **0x2c FALL-THROUGH arm** — same length constraint, premise
-   `notBool #coequalWhitelistContains(...)`: no-op, inherits decode-advanced `<pc>`, leaves
-   `#run` in `<k>`.
+   `notBool #coequalContains(substrBytes(ARGS, 2, lengthBytes(ARGS)), ...)`: no-op, inherits
+   decode-advanced `<pc>`, leaves `#run` in `<k>`.
 3. **0x2c UNMODELLED-ARGS-LENGTH arm** — `lengthBytes(ARGS) <Int 2 orBool
-   (lengthBytes(ARGS) -Int 2) modInt 10 =/=Int 0`: reverts with `"UNMODELLED-ARGS-LENGTH"`.
-4. **0x2d JUMP arm** — canonical-pitch ARGS (`lengthBytes(ARGS) >=Int 7` and
-   `(lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0`), premise `#sequentialWhitelistJumps(...)`:
-   overwrites `<pc>`, leaves `#run` in `<k>`.
-5. **0x2d REVERT arm** — same length constraint, premise `#sequentialWhitelistReverts(...)`:
-   reverts with `"WhitelistAllowedTimeViolation"`.
-6. **0x2d FALL-THROUGH arm** — same length constraint, premise conjoining
-   `notBool #sequentialWhitelistJumps(...)` and `notBool #sequentialWhitelistReverts(...)`:
-   no-op, inherits decode-advanced `<pc>`.
-7. **0x2d UNMODELLED-ARGS-LENGTH arm** — `lengthBytes(ARGS) <Int 7 orBool
-   (lengthBytes(ARGS) -Int 7) modInt 12 =/=Int 0`: reverts with `"UNMODELLED-ARGS-LENGTH"`.
+   `(lengthBytes(ARGS) -Int 2) modInt 10 =/=Int 0`: reverts with `"UNMODELLED-ARGS-LENGTH"`.
+4. **0x2d PRE-LOOP REVERT arm** — canonical-pitch ARGS (`lengthBytes(ARGS) >=Int 7` and
+   `(lengthBytes(ARGS) -Int 7) modInt 12 ==Int 0`), premise
+   `#blockTimestamp() <Int Bytes2Int(substrBytes(ARGS, 2, 7), BE, Unsigned)` (ts < start):
+   reverts with `"WhitelistAllowedTimeViolation"`, mirroring the top-level check at
+   Whitelist.sol:147. This arm is separate from the IN-WINDOW REVERT arm because `#seqOutcome`
+   assumes `ts >= start` (its `TIMELEFT` argument is `ts - start` and must be non-negative).
+5. **0x2d JUMP arm** — same length constraint + `ts >= start`, premise
+   `#seqOutcome(substrBytes(ARGS, 7, lengthBytes(ARGS)), ts - start, TAKER modInt 2^80) ==Int
+   #wlJump()`: overwrites `<pc>` with `Bytes2Int(substrBytes(ARGS, 0, 2), BE, Unsigned)`,
+   leaves `#run` in `<k>`. The premise is the recursive function evaluation, NOT an
+   uninterpreted predicate — so this arm fires for the right reason on concrete lists.
+6. **0x2d IN-WINDOW REVERT arm** — same length constraint + `ts >= start`, premise
+   `#seqOutcome(...) ==Int #wlRevert()`: reverts with `"WhitelistAllowedTimeViolation"`,
+   mirroring Whitelist.sol:163 (`if (timeLeft < duration) revert ...;`).
+7. **0x2d FALL-THROUGH arm** — same length constraint + `ts >= start`, premise
+   `#seqOutcome(...) ==Int #wlFallthrough()`: no-op, inherits decode-advanced `<pc>`.
+8. **0x2d UNMODELLED-ARGS-LENGTH arm** — `lengthBytes(ARGS) <Int 7 orBool
+   `(lengthBytes(ARGS) -Int 7) modInt 12 =/=Int 0`: reverts with `"UNMODELLED-ARGS-LENGTH"`.
+
+(Plus the four `#seqOutcome` recursion rules and three outcome-tag simplifications declared
+in the same module — these are the function's definition, not instruction-level rules.)
 
 The JUMP arms overwrite `<pc>` (mirroring `pcs = ctx.vm.nextPC` in VM.sol, swapvm.md:138-140),
 exactly like Jump (`opcodes/jump.k`). The FALL-THROUGH arms inherit the decode-advanced `<pc>`
-and leave it (same posture as Salt, Deadline, Gte, and 0x2b PASS). The REVERT arm clears `<k>`
+and leave it (same posture as Salt, Deadline, Gte, and 0x2b PASS). The REVERT arms clear `<k>`
 (swapvm.md:154-156).
+
+### Direct form, concrete conformance
+
+The 0x2c JUMP/FALL-THROUGH arms and the 0x2d JUMP/REVERT/FALL-THROUGH arms no longer branch
+on uninterpreted Bool predicates — they branch on recursive functions (`#coequalContains` for
+0x2c, `#seqOutcome` for 0x2d) that evaluate the Solidity loops literally, including the
+time arithmetic for 0x2d. The benefit mirrors what `opcodes/gte.md` "Direct form, concrete
+conformance" records for Gte: a CONCRETE claim (`proofs/whitelistcoequal-concrete.k`,
+`proofs/whitelistsequential-concrete.k`) with concrete ARGS and concrete `<taker>` (and, for
+0x2d, a concrete `#blockTimestamp()` pinned by premise) makes the recursion reduce to a
+concrete Bool / outcome tag via the bytes lemmas, so the rule's arm selection is decided by
+the SMT solver against the REAL byte-level match and REAL time-window arithmetic. This IS
+conformance evidence — the K proof verifies that for the named inputs, the K model reaches
+the same `<pc>` and `<status>` as Solidity's `_whitelistCoequal` / `_whitelistSequential`
+body would.
+
+A SYMBOLIC universal claim over arbitrary ARGS does NOT prove in this form (the recursion is
+stuck on symbolic bytes), which is the honest posture: the prior symbolic spec/control pairs
+(`whitelistcoequal-spec.k`/`-control.k`, `whitelistsequential-spec.k`/`-control.k`) were
+tautological under the uninterpreted-predicate form and have been DELETED. The concrete
+pairs are the replacement — see the concrete-proof headers for the full rationale.
+
+#### 0x2d-specific fidelity: the address-before-duration order
+
+A non-trivial property the 0x2d recursion preserves is the Solidity rule that the address
+match is checked BEFORE the duration check (Whitelist.sol:158-163):
+```solidity
+if (sender == allowedTaker) { ctx.vm.nextPC = pc; return; }   // checked FIRST
+if (timeLeft < duration) revert WhitelistAllowedTimeViolation();  // checked SECOND
+```
+The `#seqOutcome` JUMP rule fires on `addr == PACKED` alone (no `TIMELEFT` constraint), so a
+matching entry JUMPS even when `timeLeft < duration` would otherwise revert. Scenario A of
+`proofs/whitelistsequential-concrete.k` exercises exactly this: with `timeLeft=10 <
+duration=1000` AND `addr=4660 == taker=4660`, the JUMP outcome is selected, not REVERT. An
+inverted order (duration checked first) would REVERT and the proof would fail — covering
+this scenario guards against such a bug.
 
 ## The canonical-pitch constraint is `>=Int` + `modInt`, not `==Int`
 
@@ -283,64 +381,83 @@ pitch constraint are the faithful shape.
 Same root cause as "The canonical-pitch constraint is `>=Int` + `modInt`" above, but called
 out separately because it is the soundness argument for the UNMODELLED-ARGS-LENGTH arm. The
 Solidity's `args.slice(N)` and `list.length / K` never revert for a wrong length; the model's
-third/seventh rules do, so a proof touching such a Whitelist fails rather than succeeds on a
-fiction. This is the same pattern all the other pad-and-truncate-hazard opcodes follow.
+UNMODELLED-ARGS-LENGTH rules do (third rule for 0x2c, eighth rule for 0x2d), so a proof
+touching such a Whitelist fails rather than succeeds on a fiction. This is the same pattern
+all the other pad-and-truncate-hazard opcodes follow.
 
 ## Composition
 
 - **0x2c JUMP arm** — overwrites `<pc>`, leaves `#run` in `<k>`, loop proceeds. Same shape as
   Jump (`opcodes/jump.k`). A positive claim must constrain the program so the jump lands past
-  the end (loop-exit rule fires); see `proofs/whitelistcoequal-spec.k`.
+  the end (loop-exit rule fires); see `proofs/whitelistcoequal-concrete.k` (scenario A).
 - **0x2c FALL-THROUGH arm** — inherits decode-advanced `<pc>`, leaves `#run` in `<k>`, loop
   proceeds. Same shape as Salt/Deadline/Gte PASS arms. A positive claim must terminate
-  concretely.
-- **0x2d JUMP arm** — same shape as 0x2c JUMP arm.
-- **0x2d REVERT arm** — clears `<k>`, loop halts. Same shape as gate-spec / deadline-spec /
-  gte-spec / supplyshare-spec REVERT arms. A positive claim quantifies over an arbitrary
-  symbolic TAIL that is never decoded.
+  concretely; see `proofs/whitelistcoequal-concrete.k` (scenario B).
+- **0x2d PRE-LOOP REVERT arm** — clears `<k>`, loop halts. Same shape as gate-spec / deadline-
+  spec / gte-spec / supplyshare-spec REVERT arms. A positive claim pins `ts < start`
+  concretely (e.g. `requires #blockTimestamp() ==Int 10` plus `start > 10` in ARGS).
+- **0x2d JUMP arm** — same shape as 0x2c JUMP arm. See `proofs/whitelistsequential-concrete.k`
+  (scenario A).
+- **0x2d IN-WINDOW REVERT arm** — clears `<k>`, loop halts. Same shape as the PRE-LOOP REVERT
+  arm. See `proofs/whitelistsequential-concrete.k` (scenario B).
 - **0x2d FALL-THROUGH arm** — same shape as 0x2c FALL-THROUGH arm.
 
-The minimum positive claims (`proofs/whitelistcoequal-spec.k`, `proofs/whitelistsequential-spec.k`)
-cover the JUMP arm of each opcode, with the program constrained to a single Whitelist
-instruction so the jump lands past the end and the loop-exit rule fires on the next step
-without decoding a tail — exactly the shape `proofs/jump-spec.k` introduced.
+The minimum positive claims (`proofs/whitelistcoequal-concrete.k`, `proofs/whitelistsequential-concrete.k`)
+cover the JUMP arm of each opcode (plus, for 0x2d, the IN-WINDOW REVERT arm), with the program
+constrained to a single Whitelist instruction so the jump lands past the end and the loop-exit
+rule fires on the next step without decoding a tail — exactly the shape `proofs/jump-spec.k`
+introduced.
 
 ## Fidelity gaps (declared per PLAN.md D3, D4, D5)
 
 These are the elisions a reviewer needs to see written out, not inferred.
 
-1. **The 0x2c byte-level list parse is NOT modelled (D4).** The Solidity iterates
-   `while (i-- > 0)` over `args.slice(2)`, parsing 10-byte packed addresses via
-   `list.parseWhitelistCoequalIx(i)`. The K model abstracts the OUTCOME of this loop as the
-   uninterpreted Bool predicate `#coequalWhitelistContains(ARGS, PACKED)`. **Consequence:**
-   the model can prove "if the taker is in the list, the JUMP arm fires and `<pc>` is
-   overwritten" — but it CANNOT derive `#coequalWhitelistContains(ARGS, PACKED)` from a
-   concrete ARGS and PACKED. A spec must assert the predicate directly. The byte-level
-   comparison is opaque to K.
+1. **The 0x2c byte-level list parse IS now modelled (D4 closed for 0x2c).** The Solidity
+   iterates `while (i-- > 0)` over `args.slice(2)`, parsing 10-byte packed addresses via
+   `list.parseWhitelistCoequalIx(i)`. The K model now mirrors this loop directly as the
+   recursive function `#coequalContains(LIST, PACKED)` (declared and defined in
+   `opcodes/whitelists.k` — base case: empty list → `false`; recursive case: compare first
+   10 bytes to PACKED, recurse on tail). **Consequence:** on CONCRETE lists the recursion
+   reduces to a concrete Bool via the bytes lemmas, so `proofs/whitelistcoequal-concrete.k`
+   is genuine conformance evidence — the K proof verifies the actual byte-level match against
+   Solidity for fixed inputs, exactly as `proofs/gte-concrete.k` verifies the actual `>=Int`
+   comparison. On SYMBOLIC lists neither rule's `requires` reduces, so the function is STUCK
+   (not wrong) — the honest posture. This item previously recorded the uninterpreted
+   predicate `#coequalWhitelistContains(ARGS, PACKED)` as a D4 gap; that gap is now closed.
+   The old symbolic spec/control pair (`whitelistcoequal-spec.k`, `-control.k`) was
+   tautological under the predicate form and has been DELETED.
 
-2. **The 0x2d byte-level list parse AND time arithmetic are NOT modelled (D4).** The Solidity
-   iterates `while (i < length)`, parsing 12-byte (duration, address) pairs, comparing each
-   address to `sender`, and walking `timeLeft` from `block.timestamp - start` down by each
-   duration until either a match (JUMP) or an in-window expiration (REVERT). The K model
-   abstracts the JOINT outcome as two uninterpreted Bool predicates
-   (`#sequentialWhitelistJumps`, `#sequentialWhitelistReverts`). **Consequence:** the model
-   can prove "if the JUMP outcome holds, the JUMP arm fires and `<pc>` is overwritten" — but
-   it CANNOT derive the outcome from the start, durations, addresses, and timestamp. The
-   `block.timestamp`-vs-`start` comparison, the `timeLeft -= duration` walk, and the per-entry
-   `timeLeft < duration` revert are all inside the predicates, opaque to K.
+2. **The 0x2d byte-level list parse AND time arithmetic ARE now modelled (D4 closed for
+   0x2d).** The Solidity iterates `while (i < length)`, parsing 12-byte (duration, address)
+   pairs, comparing each address to `sender`, and walking `timeLeft` from
+   `block.timestamp - start` down by each duration until either a match (JUMP) or an in-window
+   expiration (REVERT). The K model now mirrors this loop AND its time arithmetic directly as
+   the recursive function `#seqOutcome(LIST, TIMELEFT, PACKED)` (declared and defined in
+   `opcodes/whitelists.k` — base case: empty list → `#wlFallthrough()`; recursive cases:
+   address matches → `#wlJump()`, address differs + `timeLeft < duration` → `#wlRevert()`,
+   address differs + `timeLeft >= duration` → recurse on tail with `timeLeft - duration`).
+   **Consequence:** on CONCRETE lists + a CONCRETE timestamp the recursion reduces to a
+   concrete outcome tag via the bytes lemmas, so `proofs/whitelistsequential-concrete.k` is
+   genuine conformance evidence — the K proof verifies the actual byte-level match AND the
+   actual time-window arithmetic against Solidity for fixed inputs, exactly as
+   `proofs/gte-concrete.k` verifies the actual `>=Int` comparison. On SYMBOLIC lists neither
+   rule's `requires` reduces, so the function is STUCK (not wrong) — the honest posture. This
+   item previously recorded the uninterpreted predicates `#sequentialWhitelistJumps` /
+   `#sequentialWhitelistReverts` as a D4 gap; that gap is now closed. The old symbolic
+   spec/control pair (`whitelistsequential-spec.k`, `-control.k`) was tautological under the
+   predicate form and has been DELETED.
 
-3. **Mutual exclusivity between the three 0x2d outcomes is NOT enforced by K.** By Solidity
-   control flow, `#sequentialWhitelistJumps` and `#sequentialWhitelistReverts` can never both
-   hold (a JUMP `return`s before any later REVERT can fire; a REVERT aborts before any later
-   JUMP can match). K does NOT know this: the two predicates are independent uninterpreted
-   symbols, and K will happily admit a model in which both hold simultaneously. A spec that
-   selects one arm MUST assert the negation of the other predicates itself. The positive
-   spec `proofs/whitelistsequential-spec.k` does this by adding
-   `notBool #sequentialWhitelistReverts(...)` to its premise — without that guard, the prover
-   explores the REVERT arm (whose side condition is consistent with the spec's other premises)
-   and the all-path claim stalls with `<status> Reverted("WhitelistAllowedTimeViolation")`
-   instead of proving the JUMP outcome. The 0x2c opcode has no analogous hazard (it has only
-   two outcomes, JUMP and FALL THROUGH, which ARE complementary negations of one predicate).
+3. **Mutual exclusivity between the three 0x2d outcomes is enforced by construction.** The
+   recursive `#seqOutcome` returns exactly one of `#wlJump()`, `#wlRevert()`, `#wlFallthrough()`
+   — the four defining rules have non-overlapping `requires` clauses (empty vs non-empty list,
+   addr== vs addr=/=, `timeLeft < dur` vs `timeLeft >= dur`), so for any concrete input
+   exactly one fires. This is a STRONGER guarantee than the prior uninterpreted-predicate
+   form, where K happily admitted models in which both `#sequentialWhitelistJumps` and
+   `#sequentialWhitelistReverts` held simultaneously and specs had to manually assert mutual
+   exclusivity (see the deleted `whitelistsequential-spec.k`'s `notBool
+   #sequentialWhitelistReverts(...)` guard for the old workaround). No such guard is needed
+   in the concrete claims (`proofs/whitelistsequential-concrete.k`) — the recursion itself
+   enforces it.
 
 4. **Sub-canonical and off-pitch args unmodelled.** Solidity right-pads short `args` and
    silently ignores off-pitch trailing partials without reverting; the model reverts loudly
@@ -352,9 +469,12 @@ These are the elisions a reviewer needs to see written out, not inferred.
 5. **Empty-list outcome preserved.** A 0-byte payload (N = 0) is legal on chain — 0x2c with
    `lengthBytes(ARGS) ==Int 2` is an always-empty whitelist (FALL THROUGH), 0x2d with
    `lengthBytes(ARGS) ==Int 7` reverts iff before `start`, otherwise FALL THROUGH. The model
-   admits these via the `>=Int` lower bound, NOT an `==Int` equality; the consequences above
-   still hold (the predicates' values for the empty-list case are asserted by specs, not
-   derived).
+   admits these via the `>=Int` lower bound, NOT an `==Int` equality. For 0x2c the recursive
+   `#coequalContains` reduces to `false` on the empty list (base case), selecting the
+   FALL-THROUGH arm directly — no spec assertion needed. For 0x2d the recursive `#seqOutcome`
+   reduces to `#wlFallthrough()` on the empty list (base case), selecting the FALL-THROUGH arm
+   directly when `ts >= start` (or the PRE-LOOP REVERT arm when `ts < start`) — again no spec
+   assertion needed beyond the timestamp pin.
 
 6. **Quote payload opaque.** Like every other revert in this system (PLAN.md D5), the K
    reason is an opaque string token. The real VM carries no error payload for
