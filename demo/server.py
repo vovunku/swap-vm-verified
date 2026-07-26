@@ -44,6 +44,7 @@ CLAIMS = json.loads((DATA / 'claims.json').read_text())
 # must say so, not stay silent.
 MODELLED = set(CLAIMS['coverage']['modelled_list'])
 PROOFS = json.loads((DATA / 'proofs.json').read_text())
+SPECDOCS = json.loads((DATA / 'specdocs.json').read_text())
 
 # Block palette. `args` describes the fields a user edits; `size` is the byte width each
 # field occupies, matching the *ArgsBuilder helpers in src/instructions/.
@@ -453,7 +454,8 @@ class Handler(BaseHTTPRequestHandler):
                                  'blocks': blocks, 'unsupported': unsupported,
                                  'editable': not unsupported})
             return self._send(200, {'blocks': BLOCKS, 'opcodes': OPCODES,
-                                    'examples': examples, 'claims': CLAIMS, 'proofs': PROOFS})
+                                    'examples': examples, 'claims': CLAIMS, 'proofs': PROOFS,
+                                    'specdocs': SPECDOCS})
         return self._send(404, {'error': 'not found'})
 
     def do_POST(self):
@@ -480,8 +482,14 @@ class Handler(BaseHTTPRequestHandler):
             if hexstr is None:
                 hexstr, _ = assemble(req.get('blocks', []))
             steps = decode(hexstr)
+            applicable = proved(steps)
+            for a in applicable:
+                d = SPECDOCS.get(pathlib.Path(a.get('file', '')).stem)
+                if d:
+                    a['docfile'] = d['file']
+                a.pop('verdict', None)          # a verdict comes from kprove, never from here
             return self._send(200, {'hex': hexstr, 'length': len(hexstr) // 2, 'steps': steps,
-                                    'proved': proved(steps), 'lint': lint(steps),
+                                    'applicable': applicable, 'lint': lint(steps),
                                     'coverage': CLAIMS['coverage'],
                                     'controls': CLAIMS['negative_controls']})
         return self._send(404, {'error': 'not found'})

@@ -140,6 +140,34 @@ def theorems() -> list:
     return out
 
 
+def spec_docs() -> dict:
+    """Read each spec's OWN header comment. The spec is the single source of truth.
+
+    The plain-English reading, why the theorem is strong, and what it assumes are all already
+    written at the top of the `.k` file — that is where a reader will look, and where the
+    author will update it. Duplicating that prose into a hand-maintained table is precisely
+    how `test/kontrol/README.md` came to assert nine BalancesSpec proofs that the store did
+    not contain, and how OPCODE-BACKLOG.md still says "3 are modelled" after fifteen more
+    landed. So: parse it, never restate it.
+    """
+    out = {}
+    for path in [ROOT / 'semantics/proofs', ROOT.parent / 'dustproof/semantics']:
+        if not path.exists():
+            continue
+        for f in sorted(path.glob('*.k')):
+            lines, doc = f.read_text().splitlines(), []
+            for ln in lines:
+                t = ln.strip()
+                if t.startswith('//'):
+                    doc.append(t.lstrip('/').strip())
+                elif t.startswith('claim') or t.startswith('module'):
+                    if doc:
+                        break
+            rel = str(f.relative_to(ROOT if str(f).startswith(str(ROOT)) else ROOT.parent))
+            out[f.stem] = {'file': rel, 'doc': '\n'.join(doc).strip()}
+    return out
+
+
 def claims() -> dict:
     """What has been proven, stated for a human rather than for a prover.
 
@@ -276,7 +304,8 @@ def claims() -> dict:
 def main() -> int:
     OUT.mkdir(exist_ok=True)
     data = {'opcodes.json': opcodes(), 'examples.json': examples(),
-            'claims.json': claims(), 'proofs.json': theorems()}
+            'claims.json': claims(), 'proofs.json': theorems(),
+            'specdocs.json': spec_docs()}
     for name, payload in data.items():
         (OUT / name).write_text(json.dumps(payload, indent=2) + '\n')
         n = len(payload) if isinstance(payload, (list, dict)) else 0

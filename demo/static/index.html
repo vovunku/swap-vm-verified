@@ -137,7 +137,7 @@
   <h1>SwapVM — compose &amp; verify</h1>
   <span class="kicker">an order is a program</span>
   <span class="spacer"></span>
-  <button id="prove">∴ Run the proof</button><button id="execute">▶ Run for real</button><button class="primary" id="verify">Verify</button>
+  <button class="primary" id="prove">∴ Run the proof</button><button id="execute">▶ Run for real</button><button id="verify">Explain</button>
 </div>
 
 <div class="scrim" id="scrim"></div>
@@ -163,8 +163,9 @@
 
   <section class="panel">
     <h2>Verification</h2>
-    <p class="sub">Nothing runs a prover live. The proofs were discharged offline by
-       <code>kprove</code>; this matches your program against them.</p>
+    <p class="sub"><b>Explain</b> says which specification applies to this program and what it
+       claims — it is not a verdict. <b>Run the proof</b> executes <code>kprove</code> on that
+       spec and its negative control, and is the only thing here that decides anything.</p>
     <div class="pal" style="margin:0 0 14px">
       <label style="margin:0;display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:12px">
         <input type="checkbox" id="holds" checked style="width:auto"> taker holds the gate token
@@ -304,7 +305,8 @@ async function execute(){
 }
 
 function clearResults(){
-  $('#results').innerHTML = '<div class="empty">Press <b>Verify</b> to check this program.</div>';
+  $('#results').innerHTML = '<div class="empty">Press <b>Explain</b> to see which specification '
+    + 'applies, or <b>Run the proof</b> to check it.</div>';
   const e = $('#exec'); if(e) e.innerHTML = '';
 }
 
@@ -324,11 +326,13 @@ async function verify(){
   $('#results').innerHTML = '<div class="empty">checking…</div>';
   const r = await post('/api/verify', rawHex ? {hex:rawHex} : {blocks:program});
   let html = '';
-  for(const p of r.proved){
+  for(const p of r.applicable){
     html += p.holds
-      ? verdictBlock('yes','PROVED', `${p.id} — holds for this program`, p.plain,
-                     `${p.because} ${p.why_it_is_strong}`, p.assumptions, p.file)
-      : verdictBlock('no','N/A', `${p.id} — does not apply`, p.plain, p.because, null, p.file);
+      ? verdictBlock('info','APPLIES', `${p.id} — this spec covers your program`, p.plain,
+                     `${p.because} ${p.why_it_is_strong} — press "Run the proof" to check it.`,
+                     p.assumptions, p.docfile || p.file)
+      : verdictBlock('no','N/A', `${p.id} — does not apply`, p.plain, p.because, null,
+                     p.docfile || p.file);
   }
   for(const l of r.lint){
     const cls = l.level==='error'?'err':l.level==='warn'?'warn':'info';

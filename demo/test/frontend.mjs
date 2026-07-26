@@ -48,7 +48,7 @@ check('closes on scrim click', !$('#drawer').classList.contains('open'));
 console.log('\n3. Verify produces verdicts');
 $('#verify').click(); await sleep(900);
 const res = $('#results').textContent;
-check('T0 reported PROVED', /PROVED/.test(res) && /T0/.test(res));
+check('T0 reported as applicable (not a verdict)', /APPLIES/.test(res) && /T0/.test(res));
 check('assumptions are exposed', $$('#results details').length >= 1,
       `${$$('#results details').length} disclosures`);
 check('"what was not checked" note present', /What was not checked/i.test(res));
@@ -70,7 +70,7 @@ console.log('\n5. editing clears a stale verdict');
 $('#openCat').click(); await sleep(60);
 $$('.card').find(c => c.dataset.ex === '__good').click(); await sleep(700);
 $('#verify').click(); await sleep(900);
-check('verdict present before edit', /PROVED/.test($('#results').textContent));
+check('explanation present before edit', /APPLIES/.test($('#results').textContent));
 const inp = $('#blocks input');
 inp.value = '123'; inp.dispatchEvent(new window.Event('input', { bubbles: true })); await sleep(400);
 check('verdict cleared after editing a field', $('#results').textContent.includes('Press'));
