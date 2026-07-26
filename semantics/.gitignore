@@ -2,5 +2,6 @@
 # mutation/run-native.sh). These are multi-hundred-MB kompiled definitions and temp files.
 swapvm-haskell/
 swapvm-llvm/
+_swapvm-all/
 _conf_lit.txt
 _work-native/

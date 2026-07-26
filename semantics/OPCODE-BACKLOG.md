@@ -49,14 +49,14 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 |-----|--------|---------|--------|--------|
 | `0x40` | InvalidateBit | `Invalidators._invalidateBit1D` | `instructions/Invalidators.sol` | unmodelled |
 | `0x41` | InvalidateTokenIn | `Invalidators._invalidateTokenIn1D` | `instructions/Invalidators.sol` | unmodelled |
-| `0x42` | InvalidateTokenOut | `Invalidators._invalidateTokenOut1D` | `instructions/Invalidators.sol` | unmodelled |
+| `0x42` | InvalidateTokenOut | `Invalidators._invalidateTokenOut1D` | `instructions/Invalidators.sol` | modelled |
 | `0x48` | ValidateSeriesEpoch | `SeriesEpochManager._validateSeriesEpochXD` | `instructions/SeriesEpochManager.sol` | unmodelled |
 
 ## 0x50–0x6f · Swap curves
 
 | Hex | Opcode | Handler | Source | Status |
 |-----|--------|---------|--------|--------|
-| `0x50` | XYCSwap | `XYCSwap._xycSwapXD` | `instructions/XYCSwap.sol` | unmodelled |
+| `0x50` | XYCSwap | `XYCSwap._xycSwapXD` | `instructions/XYCSwap.sol` | modelled |
 | `0x51` | XYCConcentrateSwap | `XYCConcentrate._xycConcentrateGrowLiquidity2D` | `instructions/XYCConcentrate.sol` | unmodelled |
 | `0x53` | LimitSwap | `LimitSwap._limitSwap1D` | `instructions/LimitSwap.sol` | **modelled** |
 | `0x54` | LimitSwapFullAmount | `LimitSwap._limitSwapOnlyFull1D` | `instructions/LimitSwap.sol` | unmodelled |
@@ -107,5 +107,5 @@ in K while production either runs real logic or reverts. See `swapvm.md:330-346`
 
 ## Count
 
-- 18 modelled (3 in `swapvm.md` + 15 in `semantics/opcodes/`), 28 unmodelled-but-dispatched = 46 dispatched total, ~164 reserved.
+- 20 modelled (3 in `swapvm.md` + 17 in `semantics/opcodes/`), 26 unmodelled-but-dispatched = 46 dispatched total, ~164 reserved.
 - When a subagent lands an opcode, flip its row to **modelled**. The core control flow family's rules live in sibling modules (`SWAPVM-STOP`, `SWAPVM-REVERT`, `SWAPVM-SALT`, `SWAPVM-JUMP`, `SWAPVM-EXTRUCTION`) that must be wired into `lemmas.k` via `requires` + `imports`; see `opcodes/README.md` (TODO) or each opcode's `.md` for the recipe.
