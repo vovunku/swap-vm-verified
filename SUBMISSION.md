@@ -1,41 +1,85 @@
-# ETHGlobal submission — description field
+# ETHGlobal submission
 
-Copy the block below. ~2,200 characters.
-
----
-
-SwapVM makes a trading strategy **data** rather than a contract: a maker ships a bytecode program and the VM runs it. That's what makes auditing the VM insufficient — an audit covers the interpreter, but every program written afterwards is new attack surface with no audit at all, and there will be far more programs than instructions.
-
-We wanted SwapVM itself to be as secure as possible, and to leave future builders leverage to secure their own composite programs. So the project is two parts.
-
-**1 — Specs and proofs for SwapVM's instructions.** 281 properties across 13 instruction suites, run with Kontrol against the compiled bytecode rather than a model of it: argument-bound guards, rounding direction, overflow reachability, dead-code claims.
-
-This turned up real defects. **13 confirmed bugs, each with an executable `forge test` reproducer** — a fee adjuster that inverts against the taker above a parameter threshold and bricks entirely above another, a min-rate instruction that doesn't enforce its floor, a non-terminating loop reachable from short arguments, an unguarded division by zero, and several arithmetic panics in the pegged-swap and concentrated-liquidity curves. They're written up in `test/kontrol/analysis/BUGS.md` with an evidence level, a criticality, and a reachability assessment each, because "found by a prover" isn't the same as "exploitable on chain" and we don't conflate the two.
-
-**2 — A formal semantics you can build on.** A handwritten K semantics of the SwapVM interpreter — the full decode loop plus 20 of 52 opcodes — so a *program*, not just an instruction, can carry a machine-checked theorem. A builder writes a claim about their own bytes and discharges it with `kprove`.
-
-The leverage is concrete: our gate theorem is proved with **the rest of the program left symbolic**, so it already holds for programs nobody has written yet. Put the gate first and the theorem comes with it. `dustproof/` is a worked example — a dust sweeper whose order builder can emit only the one shape the theorems cover.
-
-Every theorem ships with a negative control that **must fail**: a proof that cannot fail proves nothing, and an inconsistent rule set proves everything while looking like success.
-
-Reproduce it in 30 seconds: `VERIFY.md`. Browse it: https://vovunku.github.io/swap-vm-verified/
+Two fields, written plainly. Copy each block as-is.
 
 ---
 
-# "How it's made" / technology field
+# Description
 
-~1,900 characters.
+In SwapVM a trading strategy is data, not a contract. The maker ships a bytecode program and
+the VM runs it. That's great for makers, but it means auditing the VM isn't enough. An audit
+covers the interpreter. It says nothing about the programs people write next, and there are
+going to be a lot more programs than there are instructions.
+
+We wanted two things: SwapVM itself as secure as we could make it, and something future
+builders can use to secure the programs they write on top of it. So the project has two
+halves.
+
+The first half is specs and proofs for SwapVM's own instructions. 281 properties over 13
+instruction suites, proved with Kontrol against the compiled bytecode rather than a model of
+it. Argument bounds, rounding direction, overflow reachability, claims that some branch is
+actually dead.
+
+We found real bugs doing this. 13 of them are confirmed, each with a forge test you can run.
+A fee adjuster that flips the adjustment against the taker once a parameter goes over a
+threshold, and bricks completely over a higher one. A min-rate instruction that doesn't
+actually enforce its floor. A loop that never terminates if you hand it short arguments. An
+unguarded division by zero. A few arithmetic panics in the pegged-swap and concentrated
+liquidity curves. They're all written up in test/kontrol/analysis/BUGS.md with an evidence
+level, a criticality, and an honest note on whether we think it's reachable in production,
+because a prover finding something isn't the same as it being exploitable and we didn't want
+to blur that. These are going to the maintainers.
+
+The second half is a formal semantics of the SwapVM interpreter, written by hand in K. The
+full decode loop plus 20 of the 52 opcodes. The point is that a whole program can carry a
+proof, not just a single instruction. You write a claim about your own bytes and run kprove
+on it.
+
+Here's the part we're happiest with. Our gate theorem — "if you don't hold the gate token you
+can't fill this order" — is proved with the rest of the program left symbolic. Not a list of
+tails we checked, an unknown tail. So it already covers programs nobody has written yet. Put
+the gate first and you get the theorem for free. dustproof/ is a worked example: a dust
+sweeper whose order builder can only emit the one program shape our theorems cover.
+
+Every theorem has a negative control next to it that has to fail. A proof that can't fail
+isn't telling you anything, and if the rule set is inconsistent it'll prove literally
+everything while looking like a clean sweep. The controls are the only thing that catches
+that.
+
+You can reproduce the whole thing in about 30 seconds: see VERIFY.md. Or just look at it:
+https://vovunku.github.io/swap-vm-verified/
 
 ---
 
-The whole project runs on one stack: **Kontrol → KEVM → K**.
+# How it's made
 
-For the instruction layer, specs are written as Solidity property tests and proved with Kontrol (pinned to 1.0.255). Kontrol compiles the contract, lifts the **deployed bytecode** into KEVM — the K semantics of the EVM — and symbolically executes it, discharging side conditions to an SMT solver. Proving against bytecode rather than source puts the compiler *inside* the trust boundary: what we prove is what actually gets deployed.
+One stack the whole way down: Kontrol, on top of KEVM, on top of K.
 
-Most of the engineering was making that terminate. Symbolic execution over 256-bit words with `bytes calldata` slicing hits walls that have nothing to do with how hard the property is. We ended up tuning the Booster backend's equation limits and fallback behaviour, raising `max-depth` and SMT timeouts per suite, and building a lemma library for byte-level reasoning. One lesson worth passing on: a proof leaf that is *terminal but not the target* is a **refutation**, not a closed branch — an off-the-shelf status reader that miscounts those turns real counterexamples into a green wall, so we wrote our own.
+For the instruction proofs we write the specs as Solidity property tests and hand them to
+Kontrol (pinned at 1.0.255). It compiles the contract, lifts the deployed bytecode into KEVM,
+which is the K semantics of the EVM, and symbolically executes that, sending the side
+conditions to an SMT solver. Working on bytecode instead of source means the compiler is
+inside what we're trusting, which we prefer — you end up proving things about what actually
+gets deployed.
 
-That's how the bugs surfaced: as counterexamples with path conditions, which we then replayed as executable `forge test` reproducers before calling anything confirmed. They'll be reported to the project's maintainers.
+Honestly, most of our time went into getting proofs to finish at all. Symbolic execution over
+256-bit words with bytes calldata slicing runs into walls that have nothing to do with whether
+the property is hard. We tuned the Booster backend's equation limits and its fallback
+behaviour, raised max-depth and SMT timeouts per suite, and built up a lemma library for
+byte-level reasoning.
 
-The second layer is where the stack choice pays off. The SwapVM interpreter's formal semantics is written **directly in K** — the same language KEVM is written in. So the same prover and the same claim syntax cover both levels: "this instruction's bytecode is correct" and "this composite program is correct" differ in what they quantify over, not in how they're written or checked. A builder who can read one can write the other.
+One thing we'd tell anyone starting this: a proof leaf that's terminal but isn't the target is
+a refutation. It's a counterexample. If your status reader counts it as a closed branch you
+get a beautiful green wall covering real bugs. We got burned by this and wrote our own reader.
 
-Both layers run their negative controls through the same harness, and the runner exits non-zero if a control ever passes.
+That's also how the bugs came out — as counterexamples with path conditions. We didn't call
+any of them confirmed until we'd replayed them as forge tests that actually fail.
+
+The reason the stack matters is the second half. We wrote the SwapVM semantics directly in K,
+the same language KEVM is written in. So both levels use the same prover and the same way of
+writing a claim. "This instruction's bytecode is correct" and "this composite program is
+correct" differ in what they quantify over, not in how you write them down or how you check
+them. If you can read one you can write the other.
+
+Both halves run their negative controls through the same script, and it exits non-zero if a
+control ever passes.
